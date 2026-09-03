@@ -80,9 +80,20 @@ namespace SkyrimMP
 
     void ActorProbe::Sample()
     {
+        static auto readyAt = std::chrono::steady_clock::time_point{};
         static auto lastSample = std::chrono::steady_clock::time_point{};
 
         const auto now = std::chrono::steady_clock::now();
+
+        if (readyAt.time_since_epoch().count() == 0) {
+            readyAt = now + 5s;
+            logs::info("[RE-0.4] actor probe warmup started");
+            return;
+        }
+
+        if (now < readyAt) {
+            return;
+        }
 
         if (lastSample.time_since_epoch().count() != 0 &&
             now - lastSample < 500ms) {
