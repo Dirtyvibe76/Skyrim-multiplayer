@@ -1,4 +1,5 @@
 #include "BethesdaPlugin.h"
+#include "PluginStack.h"
 
 #include <windows.h>
 #include <bcrypt.h>
@@ -10,7 +11,6 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <map>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -26,12 +26,14 @@ namespace
         std::string name = "SkyrimMP Server";
         std::uint16_t port = 10578;
         std::uint32_t maxPlayers = 64;
+        fs::path gameDataPath;
         fs::path modsPath = "Mods";
         fs::path manifestPath = "modmanifest.json";
     };
 
     struct ManifestFile
     {
+        fs::path fullPath;
         std::string relativePath;
         std::uintmax_t size{};
         std::string sha256;
@@ -116,6 +118,8 @@ namespace
                     config.port = static_cast<std::uint16_t>(parsed);
                 } else if (section == "server" && key == "maxplayers") {
                     config.maxPlayers = std::stoul(value);
+                } else if (section == "game" && key == "datapath") {
+                    config.gameDataPath = value;
                 } else if (section == "mods" && key == "path") {
                     config.modsPath = value;
                 } else if (section == "mods" && key == "manifest") {
@@ -205,6 +209,7 @@ namespace
             }
 
             ManifestFile file;
+            file.fullPath = entry.path();
             file.relativePath = fs::relative(entry.path(), modsRoot).generic_string();
             file.size = entry.file_size();
             file.sha256 = Sha256File(entry.path());
@@ -221,7 +226,10 @@ namespace
         return files;
     }
 
-    void WriteManifest(const ServerConfig& config, const std::vector<ManifestFile>& files)
+    void WriteManifest(
+        const ServerConfig& config,
+        const std::vector<ManifestFile>& files,
+        const std::vector<SkyrimMP::Server::PluginStackEntry>& pluginStack)
     {
         const auto parent = config.manifestPath.parent_path();
         if (!parent.empty()) {
@@ -241,11 +249,27 @@ namespace
         }
 
         out << "{\n";
-        out << "  \"schema\": 2,\n";
+        out << "  \"schema\": 3,\n";
         out << "  \"serverName\": \"" << JsonEscape(config.name) << "\",\n";
         out << "  \"fileCount\": " << files.size() << ",\n";
         out << "  \"pluginCount\": " << pluginCount << ",\n";
         out << "  \"totalBytes\": " << totalBytes << ",\n";
+        out << "  \"pluginStack\": [\n";
+        for (std::size_t i = 0; i < pluginStack.size(); ++i) {
+            const auto& entry = pluginStack[i];
+            out << "    {\"stackIndex\":" << entry.stackIndex
+                << ",\"name\":\"" << JsonEscape(entry.header.filename)
+                << "\",\"source\":\"" << SkyrimMP::Server::PluginSourceName(entry.source)
+                << "\",\"masters\":[";
+            for (std::size_t m = 0; m < entry.header.masters.size(); ++m) {
+                if (m != 0) out << ',';
+                out << '"' << JsonEscape(entry.header.masters[m]) << '"';
+            }
+            out << "]}";
+            if (i + 1 != pluginStack.size()) out << ',';
+            out << '\n';
+        }
+        out << "  ],\n";
         out << "  \"files\": [\n";
         for (std::size_t i = 0; i < files.size(); ++i) {
             const auto& file = files[i];
@@ -288,7 +312,16 @@ int main(int argc, char** argv)
         std::cout << "[MODS] scanning " << fs::absolute(config.modsPath).string() << '\n';
 
         const auto files = BuildManifest(config.modsPath);
-        WriteManifest(config, files);
+
+        std::vector<fs::path> hostedPlugins;
+        for (const auto& file : files) {
+            if (file.plugin) {
+                hostedPlugins.push_back(file.fullPath);
+            }
+        }
+
+        const auto pluginStack = SkyrimMP::Server::ResolvePluginStack(hostedPlugins, config.gameDataPath);
+        WriteManifest(config, files, pluginStack);
 
         const auto pluginCount = std::count_if(files.begin(), files.end(), [](const auto& file) { return file.plugin; });
         std::cout << "[MODS] files=" << files.size() << " plugins=" << pluginCount << '\n';
@@ -307,8 +340,15 @@ int main(int argc, char** argv)
             }
         }
 
+        std::cout << "[STACK] resolved=" << pluginStack.size() << '\n';
+        for (const auto& entry : pluginStack) {
+            std::cout << "[STACK] index=" << entry.stackIndex
+                      << " source=" << SkyrimMP::Server::PluginSourceName(entry.source)
+                      << " plugin=" << entry.header.filename << '\n';
+        }
+
         std::cout << "[MODS] manifest=" << fs::absolute(config.manifestPath).string() << '\n';
-        std::cout << "[PASS] server mod-host manifest + TES4 header import complete\n";
+        std::cout << "[PASS] server mod-host manifest + TES4 master-chain resolution complete\n";
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "[FATAL] " << ex.what() << '\n';
