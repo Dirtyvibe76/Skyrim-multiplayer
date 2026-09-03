@@ -93,14 +93,15 @@ namespace SkyrimMP::Server
                   << " maxPlayers=" << config.maxPlayers
                   << " protocol=" << kWireProtocolVersion
                   << " loadOrder=" << loadOrderRevision << '\n';
+        std::cout << "[LIVE] authority=server-player-entity interest=derived-from-authoritative-player\n";
         std::cout << "[LIVE] Ctrl+C to stop dedicated server\n";
 
         while (!g_stopRequested.load(std::memory_order_relaxed)) {
             transport.PollOnce();
             sessions.ProcessAcknowledgements(transport);
-            sessions.ProcessControlPackets(transport);
+            sessions.ProcessAuthoritativeControlPackets(transport, registry);
             transport.PumpMaintenance(std::chrono::milliseconds(100), std::chrono::seconds(30));
-            sessions.ExpireIdle(std::chrono::seconds(15));
+            sessions.ExpireIdleAuthoritative(registry, std::chrono::seconds(15));
 
             const auto now = std::chrono::steady_clock::now();
             if (now >= nextTick) {
@@ -114,6 +115,12 @@ namespace SkyrimMP::Server
                 const auto& s = sessions.Stats();
                 std::cout << "[LIVE-STATUS] ticks=" << ticks
                           << " sessions=" << sessions.SessionCount()
+                          << " players=" << sessions.ActivePlayerCount()
+                          << " playerSpawned=" << s.playerEntitiesSpawned
+                          << " playerRequests=" << s.playerStateRequests
+                          << " playerApplied=" << s.playerStateApplied
+                          << " playerRejected=" << s.playerStateRejected
+                          << " playerDespawned=" << s.playerEntitiesDespawned
                           << " interestUpdates=" << s.interestUpdates
                           << " replicationFrames=" << s.replicationFrames
                           << " replicationMessages=" << s.replicationMessages
@@ -134,6 +141,11 @@ namespace SkyrimMP::Server
         SetConsoleCtrlHandler(ConsoleHandler, FALSE);
         std::cout << "[LIVE-STOP] ticks=" << ticks
                   << " sessions=" << sessions.SessionCount()
+                  << " players=" << sessions.ActivePlayerCount()
+                  << " playerSpawned=" << sessions.Stats().playerEntitiesSpawned
+                  << " playerApplied=" << sessions.Stats().playerStateApplied
+                  << " playerRejected=" << sessions.Stats().playerStateRejected
+                  << " playerDespawned=" << sessions.Stats().playerEntitiesDespawned
                   << " replicationFrames=" << sessions.Stats().replicationFrames
                   << " replicationMessages=" << sessions.Stats().replicationMessages
                   << " reliablePackets=" << sessions.Stats().reliableReplicationPackets
