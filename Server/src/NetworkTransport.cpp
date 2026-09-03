@@ -14,10 +14,7 @@ namespace SkyrimMP::Server
     {
         constexpr std::uintptr_t kInvalidSocketValue = static_cast<std::uintptr_t>(INVALID_SOCKET);
 
-        SOCKET ToSocket(std::uintptr_t value)
-        {
-            return static_cast<SOCKET>(value);
-        }
+        SOCKET ToSocket(std::uintptr_t value) { return static_cast<SOCKET>(value); }
 
         NetworkEndpoint EndpointFromSockaddr(const sockaddr_in& address)
         {
@@ -128,17 +125,11 @@ namespace SkyrimMP::Server
         boundPort_ = 0;
         sessions_.clear();
         controlInbox_.clear();
+        ackInbox_.clear();
     }
 
-    bool NetworkTransport::IsBound() const noexcept
-    {
-        return socket_ != kInvalidSocketValue;
-    }
-
-    std::uint16_t NetworkTransport::BoundPort() const noexcept
-    {
-        return boundPort_;
-    }
+    bool NetworkTransport::IsBound() const noexcept { return socket_ != kInvalidSocketValue; }
+    std::uint16_t NetworkTransport::BoundPort() const noexcept { return boundPort_; }
 
     NetworkSession& NetworkTransport::TouchSession(const NetworkEndpoint& endpoint)
     {
@@ -195,10 +186,7 @@ namespace SkyrimMP::Server
         return packet.sequence;
     }
 
-    std::uint32_t NetworkTransport::SendMessages(
-        const NetworkEndpoint& endpoint,
-        WireChannel channel,
-        const std::vector<ReplicationMessage>& messages)
+    std::uint32_t NetworkTransport::SendMessages(const NetworkEndpoint& endpoint, WireChannel channel, const std::vector<ReplicationMessage>& messages)
     {
         WirePacket packet;
         packet.kind = WirePacketKind::Data;
@@ -207,10 +195,7 @@ namespace SkyrimMP::Server
         return SendPacket(endpoint, std::move(packet));
     }
 
-    std::uint32_t NetworkTransport::SendControl(
-        const NetworkEndpoint& endpoint,
-        WireChannel channel,
-        const std::vector<std::uint8_t>& payload)
+    std::uint32_t NetworkTransport::SendControl(const NetworkEndpoint& endpoint, WireChannel channel, const std::vector<std::uint8_t>& payload)
     {
         WirePacket packet;
         packet.kind = WirePacketKind::Control;
@@ -247,7 +232,10 @@ namespace SkyrimMP::Server
                 if (packet.kind == WirePacketKind::Ack) {
                     ++session.acksReceived;
                     const auto erased = session.reliablePending.erase(packet.ackSequence);
-                    if (erased != 0) ++stats_.reliableAcked;
+                    if (erased != 0) {
+                        ++stats_.reliableAcked;
+                        ackInbox_.push_back(ReceivedAcknowledgement{ endpoint, packet.ackSequence });
+                    }
                     continue;
                 }
 
@@ -297,6 +285,13 @@ namespace SkyrimMP::Server
         return result;
     }
 
+    std::vector<ReceivedAcknowledgement> NetworkTransport::DrainAcknowledgements()
+    {
+        auto result = std::move(ackInbox_);
+        ackInbox_.clear();
+        return result;
+    }
+
     std::optional<NetworkSession> NetworkTransport::GetSession(const NetworkEndpoint& endpoint) const
     {
         const auto it = sessions_.find(endpoint);
@@ -304,15 +299,8 @@ namespace SkyrimMP::Server
         return it->second;
     }
 
-    std::size_t NetworkTransport::SessionCount() const noexcept
-    {
-        return sessions_.size();
-    }
-
-    const NetworkTransportStats& NetworkTransport::Stats() const noexcept
-    {
-        return stats_;
-    }
+    std::size_t NetworkTransport::SessionCount() const noexcept { return sessions_.size(); }
+    const NetworkTransportStats& NetworkTransport::Stats() const noexcept { return stats_; }
 
     void RunNetworkTransportSelfTest()
     {
@@ -333,13 +321,9 @@ namespace SkyrimMP::Server
         clientAddress.sin_family = AF_INET;
         clientAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         clientAddress.sin_port = 0;
-        if (bind(client, reinterpret_cast<const sockaddr*>(&clientAddress), sizeof(clientAddress)) == SOCKET_ERROR) {
-            throw std::runtime_error("network transport self-test client bind failed");
-        }
+        if (bind(client, reinterpret_cast<const sockaddr*>(&clientAddress), sizeof(clientAddress)) == SOCKET_ERROR) throw std::runtime_error("network transport self-test client bind failed");
         int clientLength = sizeof(clientAddress);
-        if (getsockname(client, reinterpret_cast<sockaddr*>(&clientAddress), &clientLength) == SOCKET_ERROR) {
-            throw std::runtime_error("network transport self-test client endpoint query failed");
-        }
+        if (getsockname(client, reinterpret_cast<sockaddr*>(&clientAddress), &clientLength) == SOCKET_ERROR) throw std::runtime_error("network transport self-test client endpoint query failed");
         const NetworkEndpoint clientEndpoint{ clientAddress.sin_addr.s_addr, ntohs(clientAddress.sin_port) };
 
         sockaddr_in serverAddress{};
@@ -353,18 +337,15 @@ namespace SkyrimMP::Server
         hello.sequence = 1;
         hello.messages.push_back(TestDelta(1));
         const auto helloBytes = SerializeWirePacket(hello);
-        const auto helloSent = sendto(client, reinterpret_cast<const char*>(helloBytes.data()), static_cast<int>(helloBytes.size()), 0,
-            reinterpret_cast<const sockaddr*>(&serverAddress), sizeof(serverAddress));
-        if (helloSent != static_cast<int>(helloBytes.size())) throw std::runtime_error("network transport self-test hello send failed");
+        if (sendto(client, reinterpret_cast<const char*>(helloBytes.data()), static_cast<int>(helloBytes.size()), 0,
+            reinterpret_cast<const sockaddr*>(&serverAddress), sizeof(serverAddress)) != static_cast<int>(helloBytes.size())) throw std::runtime_error("network transport self-test hello send failed");
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
         transport.PollOnce();
         if (transport.SessionCount() != 1) throw std::runtime_error("network transport self-test did not create session");
 
         const auto reliableSequence = transport.SendMessages(clientEndpoint, WireChannel::Reliable, { TestSpawn(2) });
         const auto firstReliable = DeserializeWirePacket(ReceiveClientDatagram(client));
-        if (firstReliable.sequence != reliableSequence || firstReliable.channel != WireChannel::Reliable) {
-            throw std::runtime_error("network transport self-test reliable delivery mismatch");
-        }
+        if (firstReliable.sequence != reliableSequence || firstReliable.channel != WireChannel::Reliable) throw std::runtime_error("network transport self-test reliable delivery mismatch");
 
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         transport.PumpMaintenance(std::chrono::milliseconds(5), std::chrono::seconds(5));
@@ -377,14 +358,17 @@ namespace SkyrimMP::Server
         ack.sequence = 2;
         ack.ackSequence = reliableSequence;
         const auto ackBytes = SerializeWirePacket(ack);
-        const auto ackSent = sendto(client, reinterpret_cast<const char*>(ackBytes.data()), static_cast<int>(ackBytes.size()), 0,
-            reinterpret_cast<const sockaddr*>(&serverAddress), sizeof(serverAddress));
-        if (ackSent != static_cast<int>(ackBytes.size())) throw std::runtime_error("network transport self-test ACK send failed");
+        if (sendto(client, reinterpret_cast<const char*>(ackBytes.data()), static_cast<int>(ackBytes.size()), 0,
+            reinterpret_cast<const sockaddr*>(&serverAddress), sizeof(serverAddress)) != static_cast<int>(ackBytes.size())) throw std::runtime_error("network transport self-test ACK send failed");
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
         transport.PollOnce();
 
         const auto session = transport.GetSession(clientEndpoint);
         if (!session || !session->reliablePending.empty()) throw std::runtime_error("network transport self-test ACK did not clear reliable queue");
+        const auto acknowledgements = transport.DrainAcknowledgements();
+        if (acknowledgements.size() != 1 || acknowledgements.front().sequence != reliableSequence || !(acknowledgements.front().endpoint == clientEndpoint)) {
+            throw std::runtime_error("network transport self-test ACK inbox failed");
+        }
 
         WirePacket control;
         control.kind = WirePacketKind::Control;
@@ -393,9 +377,7 @@ namespace SkyrimMP::Server
         control.controlPayload = { 0xAA, 0xBB, 0xCC };
         const auto controlBytes = SerializeWirePacket(control);
         if (sendto(client, reinterpret_cast<const char*>(controlBytes.data()), static_cast<int>(controlBytes.size()), 0,
-            reinterpret_cast<const sockaddr*>(&serverAddress), sizeof(serverAddress)) != static_cast<int>(controlBytes.size())) {
-            throw std::runtime_error("network transport self-test control send failed");
-        }
+            reinterpret_cast<const sockaddr*>(&serverAddress), sizeof(serverAddress)) != static_cast<int>(controlBytes.size())) throw std::runtime_error("network transport self-test control send failed");
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
         transport.PollOnce();
         const auto controls = transport.DrainControlPackets();
@@ -412,8 +394,8 @@ namespace SkyrimMP::Server
             throw std::runtime_error("network transport self-test statistics invariant failed");
         }
 
-        std::cout << "[TRANSPORT] udp=true nonblocking=true sessions=true reliableQueue=true resend=true ackRemoval=true controlInbox=true timeout=true\n";
-        std::cout << "[TRANSPORT-SELFTEST] bind=true sessionCreate=true reliableSend=true retransmit=true ackClear=true control=true timeoutExpire=true"
+        std::cout << "[TRANSPORT] udp=true nonblocking=true sessions=true reliableQueue=true resend=true ackRemoval=true ackInbox=true controlInbox=true timeout=true\n";
+        std::cout << "[TRANSPORT-SELFTEST] bind=true sessionCreate=true reliableSend=true retransmit=true ackClear=true ackEvent=true control=true timeoutExpire=true"
                   << " retransmits=" << stats.retransmits
                   << " datagramsSent=" << stats.datagramsSent
                   << " datagramsReceived=" << stats.datagramsReceived << '\n';
