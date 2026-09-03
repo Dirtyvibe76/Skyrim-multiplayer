@@ -38,6 +38,8 @@ namespace SkyrimMP::Server
         ClientReplicationState replication;
         ClientInterestSubscription interest;
         bool hasInterest{};
+        NetworkEntityId playerEntityId{};
+        bool hasPlayerEntity{};
         std::unordered_map<std::uint32_t, std::vector<ReplicationMessage>> reliableReplicationByPacket;
     };
 
@@ -55,6 +57,11 @@ namespace SkyrimMP::Server
         std::uint64_t unreliableReplicationPackets{};
         std::uint64_t reliableReplicationAcks{};
         std::uint64_t reliableReplicationMessagesAcked{};
+        std::uint64_t playerEntitiesSpawned{};
+        std::uint64_t playerStateRequests{};
+        std::uint64_t playerStateApplied{};
+        std::uint64_t playerStateRejected{};
+        std::uint64_t playerEntitiesDespawned{};
     };
 
     class ServerSessionManager
@@ -64,7 +71,13 @@ namespace SkyrimMP::Server
 
         void ProcessAcknowledgements(NetworkTransport& a_transport);
         void ProcessControlPackets(NetworkTransport& a_transport);
+        void ProcessAuthoritativeControlPackets(
+            NetworkTransport& a_transport,
+            RuntimeEntityRegistry& a_registry);
         void ExpireIdle(std::chrono::milliseconds a_timeout = std::chrono::seconds(15));
+        void ExpireIdleAuthoritative(
+            RuntimeEntityRegistry& a_registry,
+            std::chrono::milliseconds a_timeout = std::chrono::seconds(15));
         void SendReplicationFrame(
             NetworkTransport& a_transport,
             const NetworkEndpoint& a_endpoint,
@@ -75,6 +88,7 @@ namespace SkyrimMP::Server
 
         bool IsAuthenticated(const NetworkEndpoint& a_endpoint) const;
         std::size_t SessionCount() const noexcept;
+        std::size_t ActivePlayerCount() const noexcept;
         const SessionProtocolStats& Stats() const noexcept;
 
     private:
