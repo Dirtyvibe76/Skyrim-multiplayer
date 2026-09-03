@@ -23,12 +23,12 @@ namespace SkyrimMP
     {
         auto* sourceHolder = RE::ScriptEventSourceHolder::GetSingleton();
         if (!sourceHolder) {
-            logs::critical("[RE-0.4f] ScriptEventSourceHolder unavailable");
+            logs::critical("[RE-0.4g] ScriptEventSourceHolder unavailable");
             return false;
         }
 
         sourceHolder->AddEventSink<RE::TESObjectLoadedEvent>(GetSingleton());
-        logs::info("[RE-0.4f] TESObjectLoadedEvent sink installed");
+        logs::info("[RE-0.4g] TESObjectLoadedEvent sink installed");
         return true;
     }
 
