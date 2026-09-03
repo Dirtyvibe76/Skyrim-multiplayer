@@ -1,5 +1,7 @@
 #include "CanonicalRecordDatabase.h"
 
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 
 namespace SkyrimMP::Server
@@ -26,8 +28,19 @@ namespace SkyrimMP::Server
         for (const auto& plugin : a_stack) {
             auto summary = ScanBethesdaRecords(plugin, a_stack, a_namespaces, 0);
             if (summary.canonicalUnresolved != 0) {
-                throw std::runtime_error(
-                    "cannot build canonical record database with unresolved FormIDs in " + plugin.header.filename);
+                std::ostringstream message;
+                message << "cannot build canonical record database with unresolved FormIDs in "
+                        << plugin.header.filename
+                        << ": unresolved=" << summary.canonicalUnresolved;
+                for (const auto& record : summary.unresolvedSamples) {
+                    message << " [type=" << record.type
+                            << " raw=0x" << std::hex << std::uppercase
+                            << std::setw(8) << std::setfill('0') << record.rawFormId
+                            << std::dec << std::nouppercase << std::setfill(' ')
+                            << " flags=0x" << std::hex << std::uppercase << record.recordFlags
+                            << std::dec << std::nouppercase << ']';
+                }
+                throw std::runtime_error(message.str());
             }
 
             database.scannedRecords += summary.records.size();
