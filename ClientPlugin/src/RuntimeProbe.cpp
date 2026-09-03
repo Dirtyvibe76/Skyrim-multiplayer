@@ -1,5 +1,6 @@
 #include "pch.h"
 
+#include "ClientNetwork.h"
 #include "RuntimeProbe.h"
 
 namespace SkyrimMP
@@ -46,6 +47,7 @@ namespace SkyrimMP
         static bool firstSample = true;
 
         const auto state = ReadLocalPlayer();
+        ClientNetwork::SubmitLocalPlayer(state);
 
         const bool changed =
             firstSample ||
