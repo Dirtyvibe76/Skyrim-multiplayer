@@ -3,6 +3,9 @@ Name=SkyrimMP Server
 Port=10578
 MaxPlayers=64
 
+[Network]
+TickHz=20
+
 [Game]
 ; Dedicated server imports required Bethesda master plugins from an owned Skyrim installation.
 ; Base-game files are not part of the hosted mod download manifest.
