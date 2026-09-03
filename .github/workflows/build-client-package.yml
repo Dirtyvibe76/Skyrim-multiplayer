@@ -11,6 +11,7 @@ on:
       - 'Server/**'
       - 'ClientPackage/**'
       - 'ClientLauncher/**'
+      - 'Installer/**'
       - 'External/**'
       - 'xmake.lua'
       - '.gitmodules'
@@ -67,6 +68,30 @@ jobs:
         with:
           name: SkyrimMultiplayer-Client
           path: artifact/SkyrimMultiplayer-Client
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' 'Installer\SkyrimMP.iss'
+          if (-not (Test-Path 'release\SkyrimMP-Setup.exe')) { throw 'SkyrimMP installer was not produced.' }
+          Get-FileHash 'release\SkyrimMP-Setup.exe' -Algorithm SHA256 |
+            ForEach-Object { "SkyrimMP-Setup.exe SHA256=$($_.Hash)" } |
+            Set-Content 'release\SkyrimMP-Setup.SHA256.txt'
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyrimMP-Setup
+          path: |
+            release/SkyrimMP-Setup.exe
+            release/SkyrimMP-Setup.SHA256.txt
           if-no-files-found: error
           retention-days: 30
 
