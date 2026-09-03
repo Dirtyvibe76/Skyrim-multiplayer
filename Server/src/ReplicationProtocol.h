@@ -37,6 +37,12 @@ namespace SkyrimMP::Server
         ReplicatedEntitySnapshot snapshot;
     };
 
+    struct PendingReliableEntityState
+    {
+        ReplicationMessageKind kind{ ReplicationMessageKind::Spawn };
+        std::uint64_t revision{};
+    };
+
     struct ClientInterestSubscription
     {
         RuntimeEntityLocation location;
@@ -46,7 +52,12 @@ namespace SkyrimMP::Server
 
     struct ClientReplicationState
     {
+        // ACK-confirmed remote state only.
         std::unordered_map<NetworkEntityId, std::uint64_t> knownRevisions;
+        // Reliable Spawn/Despawn operations sent but not yet ACK-confirmed.
+        std::unordered_map<NetworkEntityId, PendingReliableEntityState> pendingReliable;
+        // Last unreliable revision sent; this is not delivery confirmation.
+        std::unordered_map<NetworkEntityId, std::uint64_t> lastUnreliableSentRevision;
         std::uint64_t framesBuilt{};
         std::uint64_t spawnsSent{};
         std::uint64_t deltasSent{};
@@ -72,6 +83,13 @@ namespace SkyrimMP::Server
         const RuntimeEntityRegistry& a_registry,
         ClientReplicationState& a_client,
         const ClientInterestSubscription& a_subscription);
+
+    void MarkReliableReplicationPending(
+        ClientReplicationState& a_client,
+        const ReplicationMessage& a_message);
+    void CommitReliableReplicationAck(
+        ClientReplicationState& a_client,
+        const ReplicationMessage& a_message);
 
     void RunReplicationProtocolSelfTest(RuntimeEntityRegistry& a_registry);
 }
