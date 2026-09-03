@@ -65,6 +65,15 @@ namespace SkyrimMP::Server
                 return message.kind == kind && message.id == id;
             });
         }
+
+        const ReplicationMessage& FindMessage(const ReplicationFrame& frame, ReplicationMessageKind kind, NetworkEntityId id)
+        {
+            const auto it = std::find_if(frame.messages.begin(), frame.messages.end(), [&](const ReplicationMessage& message) {
+                return message.kind == kind && message.id == id;
+            });
+            if (it == frame.messages.end()) throw std::runtime_error("replication self-test message missing");
+            return *it;
+        }
     }
 
     std::vector<NetworkEntityId> CollectRuntimeInterestSet(
@@ -94,6 +103,31 @@ namespace SkyrimMP::Server
         return result;
     }
 
+    void MarkReliableReplicationPending(ClientReplicationState& client, const ReplicationMessage& message)
+    {
+        if (!message.reliable || message.kind == ReplicationMessageKind::Delta) {
+            throw std::runtime_error("only reliable spawn/despawn messages can be marked pending");
+        }
+        client.pendingReliable[message.id] = PendingReliableEntityState{ message.kind, message.revision };
+    }
+
+    void CommitReliableReplicationAck(ClientReplicationState& client, const ReplicationMessage& message)
+    {
+        if (!message.reliable || message.kind == ReplicationMessageKind::Delta) return;
+
+        const auto pending = client.pendingReliable.find(message.id);
+        if (pending == client.pendingReliable.end()) return;
+        if (pending->second.kind != message.kind || pending->second.revision != message.revision) return;
+
+        if (message.kind == ReplicationMessageKind::Spawn) {
+            client.knownRevisions[message.id] = message.revision;
+        } else if (message.kind == ReplicationMessageKind::Despawn) {
+            client.knownRevisions.erase(message.id);
+            client.lastUnreliableSentRevision.erase(message.id);
+        }
+        client.pendingReliable.erase(pending);
+    }
+
     ReplicationFrame BuildReplicationFrame(
         const RuntimeEntityRegistry& registry,
         ClientReplicationState& client,
@@ -113,6 +147,8 @@ namespace SkyrimMP::Server
             if (entityIt == registry.entities.end()) throw std::runtime_error("interest set references missing runtime entity");
             const auto& entity = entityIt->second;
 
+            if (client.pendingReliable.contains(id)) continue;
+
             const auto known = client.knownRevisions.find(id);
             if (known == client.knownRevisions.end()) {
                 ReplicationMessage message;
@@ -122,37 +158,35 @@ namespace SkyrimMP::Server
                 message.reliable = true;
                 message.snapshot = Snapshot(entity);
                 frame.messages.push_back(std::move(message));
-                client.knownRevisions[id] = entity.revision;
                 ++frame.spawns;
                 ++client.spawnsSent;
             } else if (entity.revision > known->second) {
-                ReplicationMessage message;
-                message.kind = ReplicationMessageKind::Delta;
-                message.id = id;
-                message.revision = entity.revision;
-                message.reliable = false;
-                message.snapshot = Snapshot(entity);
-                frame.messages.push_back(std::move(message));
-                known->second = entity.revision;
-                ++frame.deltas;
-                ++client.deltasSent;
+                const auto lastSent = client.lastUnreliableSentRevision.find(id);
+                if (lastSent == client.lastUnreliableSentRevision.end() || entity.revision > lastSent->second || (client.framesBuilt % 20u) == 0u) {
+                    ReplicationMessage message;
+                    message.kind = ReplicationMessageKind::Delta;
+                    message.id = id;
+                    message.revision = entity.revision;
+                    message.reliable = false;
+                    message.snapshot = Snapshot(entity);
+                    frame.messages.push_back(std::move(message));
+                    client.lastUnreliableSentRevision[id] = entity.revision;
+                    ++frame.deltas;
+                    ++client.deltasSent;
+                }
             }
         }
 
-        for (auto it = client.knownRevisions.begin(); it != client.knownRevisions.end();) {
-            if (interested.contains(it->first)) {
-                ++it;
-                continue;
-            }
+        for (const auto& [id, revision] : client.knownRevisions) {
+            if (interested.contains(id) || client.pendingReliable.contains(id)) continue;
             ReplicationMessage message;
             message.kind = ReplicationMessageKind::Despawn;
-            message.id = it->first;
-            message.revision = it->second;
+            message.id = id;
+            message.revision = revision;
             message.reliable = true;
             frame.messages.push_back(message);
             ++frame.despawns;
             ++client.despawnsSent;
-            it = client.knownRevisions.erase(it);
         }
 
         if (frame.messages.size() != frame.spawns + frame.deltas + frame.despawns) {
@@ -180,43 +214,51 @@ namespace SkyrimMP::Server
         subscription.exteriorRadiusCells = 1;
 
         const auto spawnFrame = BuildReplicationFrame(registry, client, subscription);
-        if (!HasMessage(spawnFrame, ReplicationMessageKind::Spawn, testId)) {
-            throw std::runtime_error("replication self-test did not emit player spawn");
-        }
+        if (!HasMessage(spawnFrame, ReplicationMessageKind::Spawn, testId)) throw std::runtime_error("replication self-test did not emit player spawn");
+        const auto& spawn = FindMessage(spawnFrame, ReplicationMessageKind::Spawn, testId);
+        MarkReliableReplicationPending(client, spawn);
+        const auto suppressedSpawnFrame = BuildReplicationFrame(registry, client, subscription);
+        if (HasMessage(suppressedSpawnFrame, ReplicationMessageKind::Spawn, testId)) throw std::runtime_error("replication self-test resent unacked spawn");
+        CommitReliableReplicationAck(client, spawn);
+        if (!client.knownRevisions.contains(testId)) throw std::runtime_error("replication self-test spawn ACK did not commit known state");
 
         auto movedInterior = interiorTransform;
         movedInterior.x += 32.0f;
         if (!UpdateRuntimeEntity(registry, testId, movedInterior, interior)) throw std::runtime_error("replication self-test interior update failed");
         subscription.transform = movedInterior;
         const auto deltaFrame = BuildReplicationFrame(registry, client, subscription);
-        if (!HasMessage(deltaFrame, ReplicationMessageKind::Delta, testId)) {
-            throw std::runtime_error("replication self-test did not emit player delta");
-        }
+        if (!HasMessage(deltaFrame, ReplicationMessageKind::Delta, testId)) throw std::runtime_error("replication self-test did not emit player delta");
 
         if (!UpdateRuntimeEntity(registry, testId, exteriorTransform, exterior)) throw std::runtime_error("replication self-test exterior transition failed");
         const auto despawnFrame = BuildReplicationFrame(registry, client, subscription);
-        if (!HasMessage(despawnFrame, ReplicationMessageKind::Despawn, testId)) {
-            throw std::runtime_error("replication self-test did not emit player despawn after leaving interest");
-        }
+        if (!HasMessage(despawnFrame, ReplicationMessageKind::Despawn, testId)) throw std::runtime_error("replication self-test did not emit player despawn after leaving interest");
+        const auto& despawn = FindMessage(despawnFrame, ReplicationMessageKind::Despawn, testId);
+        MarkReliableReplicationPending(client, despawn);
+        const auto suppressedDespawnFrame = BuildReplicationFrame(registry, client, subscription);
+        if (HasMessage(suppressedDespawnFrame, ReplicationMessageKind::Despawn, testId)) throw std::runtime_error("replication self-test resent unacked despawn");
+        CommitReliableReplicationAck(client, despawn);
+        if (client.knownRevisions.contains(testId)) throw std::runtime_error("replication self-test despawn ACK did not clear known state");
 
         subscription.location = exterior;
         subscription.transform = exteriorTransform;
         const auto respawnFrame = BuildReplicationFrame(registry, client, subscription);
-        if (!HasMessage(respawnFrame, ReplicationMessageKind::Spawn, testId)) {
-            throw std::runtime_error("replication self-test did not emit player respawn in exterior interest");
-        }
+        if (!HasMessage(respawnFrame, ReplicationMessageKind::Spawn, testId)) throw std::runtime_error("replication self-test did not emit player respawn in exterior interest");
+        const auto& respawn = FindMessage(respawnFrame, ReplicationMessageKind::Spawn, testId);
+        MarkReliableReplicationPending(client, respawn);
+        CommitReliableReplicationAck(client, respawn);
 
         if (!DespawnRuntimeEntity(registry, testId)) throw std::runtime_error("replication self-test runtime despawn failed");
         const auto finalFrame = BuildReplicationFrame(registry, client, subscription);
-        if (!HasMessage(finalFrame, ReplicationMessageKind::Despawn, testId)) {
-            throw std::runtime_error("replication self-test did not emit final player despawn");
-        }
+        if (!HasMessage(finalFrame, ReplicationMessageKind::Despawn, testId)) throw std::runtime_error("replication self-test did not emit final player despawn");
+        const auto& finalDespawn = FindMessage(finalFrame, ReplicationMessageKind::Despawn, testId);
+        MarkReliableReplicationPending(client, finalDespawn);
+        CommitReliableReplicationAck(client, finalDespawn);
         if (registry.entities.size() != registry.staticEntities) throw std::runtime_error("replication self-test leaked dynamic runtime entity");
 
         std::cout << "[REPLICATION] protocol=" << kReplicationProtocolVersion
-                  << " spawnReliable=true deltaReliable=false despawnReliable=true"
+                  << " spawnReliable=true deltaReliable=false despawnReliable=true ackCommit=true deltaRefreshFrames=20"
                   << " exteriorRadiusCells=" << subscription.exteriorRadiusCells << '\n';
-        std::cout << "[REPLICATION-SELFTEST] spawn=true delta=true interestDespawn=true interestRespawn=true finalDespawn=true"
+        std::cout << "[REPLICATION-SELFTEST] spawn=true spawnAck=true spawnSuppress=true delta=true interestDespawn=true despawnAck=true despawnSuppress=true interestRespawn=true finalDespawn=true"
                   << " spawnFrame=" << spawnFrame.messages.size()
                   << " deltaFrame=" << deltaFrame.messages.size()
                   << " despawnFrame=" << despawnFrame.messages.size()
