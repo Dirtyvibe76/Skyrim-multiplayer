@@ -21,7 +21,7 @@ namespace SkyrimMP
         constexpr float kRotationThreshold = 0.05f;
         constexpr float kPi = 3.14159265358979323846f;
         constexpr float kTwoPi = 2.0f * kPi;
-        constexpr float kWriteProbeOffsetX = 8.0f;
+        constexpr float kWriteProbeRotationOffset = 0.05f;
         constexpr auto kWriteProbeDelay = 5s;
 
         std::unordered_map<std::uint32_t, std::uint32_t> g_knownActors;
@@ -109,6 +109,15 @@ namespace SkyrimMP
                    WrappedAngleDelta(a_current.rotation.z, a_previous.rotation.z) >= kRotationThreshold;
         }
 
+        float NormalizeAngle(float a_angle)
+        {
+            float normalized = std::fmod(a_angle, kTwoPi);
+            if (normalized < 0.0f) {
+                normalized += kTwoPi;
+            }
+            return normalized;
+        }
+
         void LogSpawn(const ActorState& a_state)
         {
             logs::info(
@@ -141,11 +150,11 @@ namespace SkyrimMP
             if (g_writeProbeCandidate != a_runtimeFormId) {
                 g_writeProbeCandidate = a_runtimeFormId;
                 g_writeProbeCandidateSince = std::chrono::steady_clock::now();
-                logs::info("[REMOTE WRITE PROBE] candidate form={:08X}; waiting 5 seconds", a_runtimeFormId);
+                logs::info("[REMOTE ROTATION PROBE] candidate form={:08X}; waiting 5 seconds", a_runtimeFormId);
             }
         }
 
-        void RunControlledPositionWriteProbe()
+        void RunControlledRotationWriteProbe()
         {
             if (g_writeProbeComplete ||
                 g_writeProbeCandidate == 0 ||
@@ -183,46 +192,42 @@ namespace SkyrimMP
                 return;
             }
 
-            // Simulate one inbound server-authoritative POD position update.
-            // The offset is deliberately tiny and is restored immediately in
-            // the same update callback to minimize interference with Skyrim AI.
-            const RE::NiPoint3 requested{
-                before.position.x + kWriteProbeOffsetX,
-                before.position.y,
-                before.position.z
-            };
+            const float requestedZ = NormalizeAngle(before.rotation.z + kWriteProbeRotationOffset);
 
             logs::info(
-                "[REMOTE WRITE BEGIN] form={:08X} before=({:.2f},{:.2f},{:.2f}) requested=({:.2f},{:.2f},{:.2f})",
+                "[REMOTE ROTATION BEGIN] form={:08X} before=({:.3f},{:.3f},{:.3f}) requestedZ={:.3f}",
                 before.runtimeFormId,
-                before.position.x,
-                before.position.y,
-                before.position.z,
-                requested.x,
-                requested.y,
-                requested.z);
+                before.rotation.x,
+                before.rotation.y,
+                before.rotation.z,
+                requestedZ);
 
-            actor->SetPosition(requested, true);
+            // CommonLib exposes reference rotation through TESObjectREFR::data.angle.
+            // Update3DPosition(true) applies that transform to the live 3D/Havok state.
+            // Change yaw only, then immediately restore the original angle.
+            actor->data.angle.z = requestedZ;
+            actor->Update3DPosition(true);
 
-            const auto appliedPosition = actor->GetPosition();
+            const auto appliedAngle = actor->GetAngle();
             logs::info(
-                "[REMOTE WRITE APPLIED] form={:08X} observed=({:.2f},{:.2f},{:.2f})",
+                "[REMOTE ROTATION APPLIED] form={:08X} observed=({:.3f},{:.3f},{:.3f})",
                 before.runtimeFormId,
-                appliedPosition.x,
-                appliedPosition.y,
-                appliedPosition.z);
+                appliedAngle.x,
+                appliedAngle.y,
+                appliedAngle.z);
 
-            actor->SetPosition(
-                RE::NiPoint3{ before.position.x, before.position.y, before.position.z },
-                true);
+            actor->data.angle.x = before.rotation.x;
+            actor->data.angle.y = before.rotation.y;
+            actor->data.angle.z = before.rotation.z;
+            actor->Update3DPosition(true);
 
-            const auto restoredPosition = actor->GetPosition();
+            const auto restoredAngle = actor->GetAngle();
             logs::info(
-                "[REMOTE WRITE RESTORED] form={:08X} observed=({:.2f},{:.2f},{:.2f})",
+                "[REMOTE ROTATION RESTORED] form={:08X} observed=({:.3f},{:.3f},{:.3f})",
                 before.runtimeFormId,
-                restoredPosition.x,
-                restoredPosition.y,
-                restoredPosition.z);
+                restoredAngle.x,
+                restoredAngle.y,
+                restoredAngle.z);
 
             g_writeProbeComplete = true;
             ResetWriteProbeCandidate();
@@ -264,7 +269,6 @@ namespace SkyrimMP
                 }
 
                 const auto previousIt = g_lastRelevantState.find(runtimeFormId);
-
                 if (previousIt == g_lastRelevantState.end()) {
                     logs::info(
                         "[ACTOR RELEVANCE ENTER] form={:08X} base={:08X} cell={:08X} world={:08X}",
@@ -357,7 +361,7 @@ namespace SkyrimMP
         REL::Relocation<std::uintptr_t> playerVTable{ RE::VTABLE_PlayerCharacter[0] };
         originalUpdate = playerVTable.write_vfunc(0xAD, Update);
 
-        logs::info("[RE-0.5a] PlayerCharacter::Update hook installed; controlled inbound position write probe armed");
+        logs::info("[RE-0.5b] PlayerCharacter::Update hook installed; controlled inbound rotation write probe armed");
     }
 
     void MainThreadHook::ResetActorCache()
@@ -367,7 +371,7 @@ namespace SkyrimMP
         g_lastRelevantState.clear();
         g_writeProbeComplete = false;
         ResetWriteProbeCandidate();
-        logs::info("[RE-0.5a] actor caches reset; controlled write probe re-armed");
+        logs::info("[RE-0.5b] actor caches reset; controlled rotation write probe re-armed");
     }
 
     void MainThreadHook::Update(RE::Actor* a_actor, float a_delta)
@@ -379,7 +383,7 @@ namespace SkyrimMP
         static bool firstUpdateLogged = false;
 
         if (!firstUpdateLogged) {
-            logs::info("[RE-0.5a] PlayerCharacter::Update hook executing");
+            logs::info("[RE-0.5b] PlayerCharacter::Update hook executing");
             firstUpdateLogged = true;
         }
 
@@ -449,7 +453,7 @@ namespace SkyrimMP
             now - lastActorSample >= 500ms) {
 
             SampleRelevantActors();
-            RunControlledPositionWriteProbe();
+            RunControlledRotationWriteProbe();
             lastActorSample = now;
         }
     }
