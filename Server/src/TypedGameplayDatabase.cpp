@@ -2,10 +2,11 @@
 
 #include <zlib.h>
 
-#include <array>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 
 namespace SkyrimMP::Server
@@ -59,6 +60,19 @@ namespace SkyrimMP::Server
             return output;
         }
 
+        struct RawItem
+        {
+            std::uint32_t rawFormId{};
+            std::int32_t count{};
+        };
+
+        struct RawLevelEntry
+        {
+            std::int16_t level{};
+            std::uint32_t rawFormId{};
+            std::int16_t count{};
+        };
+
         struct TypedAccumulator
         {
             std::string editorId;
@@ -73,8 +87,8 @@ namespace SkyrimMP::Server
             std::uint32_t ammoValue{};
             std::uint8_t chanceNone{};
             std::uint8_t leveledFlags{};
-            std::vector<RawItemRef> items;
-            std::vector<RawLeveledEntry> leveled;
+            std::vector<RawItem> items;
+            std::vector<RawLevelEntry> leveled;
         };
 
         void ParseTypedSubrecords(const std::string& recordType, const std::vector<char>& data, TypedAccumulator& out)
@@ -151,12 +165,45 @@ namespace SkyrimMP::Server
             return type == "NPC_" || type == "WEAP" || type == "ARMO" ||
                    type == "AMMO" || type == "CONT" || type == "LVLI";
         }
+
+        CanonicalFormReference ResolveReference(
+            std::uint32_t rawFormId,
+            const PluginStackEntry& sourcePlugin,
+            const std::vector<PluginStackEntry>& stack,
+            const std::vector<PluginNamespace>& namespaces,
+            const WinningRecord& record,
+            const char* field,
+            TypedGameplayDatabase& database)
+        {
+            auto resolved = ResolvePluginFormReference(rawFormId, sourcePlugin, stack, namespaces);
+            if (resolved.isNull) {
+                ++database.nullReferences;
+                return resolved;
+            }
+            if (!resolved.resolved) {
+                ++database.unresolvedReferences;
+                std::ostringstream message;
+                message << "unresolved typed FormID reference in " << record.sourcePlugin
+                        << " record=" << record.type
+                        << " field=" << field
+                        << " raw=0x" << std::hex << std::uppercase
+                        << std::setw(8) << std::setfill('0') << rawFormId;
+                throw std::runtime_error(message.str());
+            }
+            ++database.canonicalReferences;
+            return resolved;
+        }
     }
 
     TypedGameplayDatabase BuildTypedGameplayDatabase(
         const CanonicalRecordDatabase& a_database,
-        const std::vector<PluginStackEntry>& a_stack)
+        const std::vector<PluginStackEntry>& a_stack,
+        const std::vector<PluginNamespace>& a_namespaces)
     {
+        if (a_stack.size() != a_namespaces.size()) {
+            throw std::runtime_error("typed gameplay stack and namespace table size mismatch");
+        }
+
         TypedGameplayDatabase result;
         std::uint64_t expectedTypedRecords{};
         for (const auto& [key, record] : a_database.winners) {
@@ -182,7 +229,10 @@ namespace SkyrimMP::Server
                     NpcRecord typed;
                     static_cast<TypedRecordBase&>(typed) = base;
                     typed.actorFlags = parsed.actorFlags;
-                    typed.inventory = std::move(parsed.items);
+                    typed.inventory.reserve(parsed.items.size());
+                    for (const auto& item : parsed.items) {
+                        typed.inventory.push_back({ ResolveReference(item.rawFormId, a_stack[stackIndex], a_stack, a_namespaces, record, "NPC_.CNTO", result), item.count });
+                    }
                     result.inventoryEntries += typed.inventory.size();
                     result.npcs.push_back(std::move(typed));
                 } else if (record.type == "WEAP") {
@@ -202,7 +252,7 @@ namespace SkyrimMP::Server
                 } else if (record.type == "AMMO") {
                     AmmoRecord typed;
                     static_cast<TypedRecordBase&>(typed) = base;
-                    typed.projectileRawFormId = parsed.projectile;
+                    typed.projectile = ResolveReference(parsed.projectile, a_stack[stackIndex], a_stack, a_namespaces, record, "AMMO.DATA.projectile", result);
                     typed.flags = parsed.ammoFlags;
                     typed.damage = parsed.ammoDamage;
                     typed.value = parsed.ammoValue;
@@ -210,7 +260,10 @@ namespace SkyrimMP::Server
                 } else if (record.type == "CONT") {
                     ContainerRecord typed;
                     static_cast<TypedRecordBase&>(typed) = base;
-                    typed.items = std::move(parsed.items);
+                    typed.items.reserve(parsed.items.size());
+                    for (const auto& item : parsed.items) {
+                        typed.items.push_back({ ResolveReference(item.rawFormId, a_stack[stackIndex], a_stack, a_namespaces, record, "CONT.CNTO", result), item.count });
+                    }
                     result.inventoryEntries += typed.items.size();
                     result.containers.push_back(std::move(typed));
                 } else if (record.type == "LVLI") {
@@ -218,7 +271,10 @@ namespace SkyrimMP::Server
                     static_cast<TypedRecordBase&>(typed) = base;
                     typed.chanceNone = parsed.chanceNone;
                     typed.flags = parsed.leveledFlags;
-                    typed.entries = std::move(parsed.leveled);
+                    typed.entries.reserve(parsed.leveled.size());
+                    for (const auto& entry : parsed.leveled) {
+                        typed.entries.push_back({ entry.level, ResolveReference(entry.rawFormId, a_stack[stackIndex], a_stack, a_namespaces, record, "LVLI.LVLO", result), entry.count });
+                    }
                     result.leveledEntries += typed.entries.size();
                     result.leveledItems.push_back(std::move(typed));
                 }
@@ -230,6 +286,9 @@ namespace SkyrimMP::Server
         if (materialized != result.parsedRecords || result.parsedRecords != expectedTypedRecords) {
             throw std::runtime_error("typed gameplay database record-count invariant failed");
         }
+        if (result.unresolvedReferences != 0) {
+            throw std::runtime_error("typed gameplay canonical-reference invariant failed");
+        }
 
         std::cout << "[TYPED] records=" << result.parsedRecords
                   << " compressed=" << result.compressedRecords
@@ -240,7 +299,10 @@ namespace SkyrimMP::Server
                   << " cont=" << result.containers.size()
                   << " lvli=" << result.leveledItems.size()
                   << " inventoryEntries=" << result.inventoryEntries
-                  << " leveledEntries=" << result.leveledEntries << '\n';
+                  << " leveledEntries=" << result.leveledEntries
+                  << " canonicalRefs=" << result.canonicalReferences
+                  << " nullRefs=" << result.nullReferences
+                  << " unresolvedRefs=" << result.unresolvedReferences << '\n';
 
         if (!result.weapons.empty()) {
             const auto& r = result.weapons.front();
@@ -255,7 +317,14 @@ namespace SkyrimMP::Server
         if (!result.ammo.empty()) {
             const auto& r = result.ammo.front();
             std::cout << "[TYPED-SAMPLE] AMMO EDID=" << r.editorId
-                      << " damage=" << r.damage << " value=" << r.value << '\n';
+                      << " damage=" << r.damage << " value=" << r.value;
+            if (r.projectile.resolved && !r.projectile.isNull) {
+                std::cout << " projectile=" << FormNamespaceKindName(r.projectile.kind)
+                          << ':' << r.projectile.namespaceIndex
+                          << ":0x" << std::hex << std::uppercase << r.projectile.localId
+                          << std::dec << std::nouppercase;
+            }
+            std::cout << '\n';
         }
 
         return result;
