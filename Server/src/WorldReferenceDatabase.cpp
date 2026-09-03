@@ -1,5 +1,6 @@
 #include "WorldReferenceDatabase.h"
 #include "WorldSpatialContext.h"
+#include "InterestManagementIndex.h"
 
 #include <zlib.h>
 
@@ -254,6 +255,11 @@ namespace SkyrimMP::Server
         const auto spatial = BuildWorldSpatialContextDatabase(a_database, a_stack);
         if (spatial.referenceRecords != world.parsedRecords) {
             throw std::runtime_error("world reference/spatial-context record-count invariant failed");
+        }
+
+        const auto interest = BuildInterestManagementIndex(world, spatial);
+        if (interest.sourceRecords != world.parsedRecords) {
+            throw std::runtime_error("world reference/interest-index record-count invariant failed");
         }
 
         return world;
