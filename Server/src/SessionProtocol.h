@@ -38,6 +38,7 @@ namespace SkyrimMP::Server
         ClientReplicationState replication;
         ClientInterestSubscription interest;
         bool hasInterest{};
+        std::unordered_map<std::uint32_t, std::vector<ReplicationMessage>> reliableReplicationByPacket;
     };
 
     struct SessionProtocolStats
@@ -52,6 +53,8 @@ namespace SkyrimMP::Server
         std::uint64_t replicationMessages{};
         std::uint64_t reliableReplicationPackets{};
         std::uint64_t unreliableReplicationPackets{};
+        std::uint64_t reliableReplicationAcks{};
+        std::uint64_t reliableReplicationMessagesAcked{};
     };
 
     class ServerSessionManager
@@ -59,6 +62,7 @@ namespace SkyrimMP::Server
     public:
         ServerSessionManager(std::string a_loadOrderRevision, std::uint32_t a_maxPlayers);
 
+        void ProcessAcknowledgements(NetworkTransport& a_transport);
         void ProcessControlPackets(NetworkTransport& a_transport);
         void ExpireIdle(std::chrono::milliseconds a_timeout = std::chrono::seconds(15));
         void SendReplicationFrame(
