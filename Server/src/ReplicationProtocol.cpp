@@ -261,6 +261,9 @@ namespace SkyrimMP::Server
         CommitReliableReplicationAck(client, finalDespawn);
 
         const auto selfId = SpawnRuntimeEntity(registry, RuntimeEntityKind::Player, interiorTransform, interior);
+        auto remoteTransform = interiorTransform;
+        remoteTransform.x += 64.0f;
+        const auto remoteId = SpawnRuntimeEntity(registry, RuntimeEntityKind::Player, remoteTransform, interior);
         ClientReplicationState selfFilteredClient;
         selfFilteredClient.excludedEntityId = selfId;
         selfFilteredClient.hasExcludedEntity = true;
@@ -270,14 +273,22 @@ namespace SkyrimMP::Server
         if (HasMessage(selfFilteredFrame, ReplicationMessageKind::Spawn, selfId) || selfFilteredFrame.selfExcluded != 1) {
             throw std::runtime_error("replication self-test failed local-player exclusion");
         }
+        if (!HasMessage(selfFilteredFrame, ReplicationMessageKind::Spawn, remoteId)) {
+            throw std::runtime_error("replication self-test failed remote-player visibility");
+        }
+        const auto& remoteSpawn = FindMessage(selfFilteredFrame, ReplicationMessageKind::Spawn, remoteId);
+        if (remoteSpawn.snapshot.kind != RuntimeEntityKind::Player) {
+            throw std::runtime_error("replication self-test remote-player kind mismatch");
+        }
+        if (!DespawnRuntimeEntity(registry, remoteId)) throw std::runtime_error("replication self-test remote-player cleanup failed");
         if (!DespawnRuntimeEntity(registry, selfId)) throw std::runtime_error("replication self-test self-filter entity cleanup failed");
 
         if (registry.entities.size() != registry.staticEntities) throw std::runtime_error("replication self-test leaked dynamic runtime entity");
 
         std::cout << "[REPLICATION] protocol=" << kReplicationProtocolVersion
-                  << " spawnReliable=true deltaReliable=false despawnReliable=true ackCommit=true deltaRefreshFrames=20 selfExclude=true"
+                  << " spawnReliable=true deltaReliable=false despawnReliable=true ackCommit=true deltaRefreshFrames=20 selfExclude=true remotePlayers=true"
                   << " exteriorRadiusCells=" << subscription.exteriorRadiusCells << '\n';
-        std::cout << "[REPLICATION-SELFTEST] spawn=true spawnAck=true spawnSuppress=true delta=true interestDespawn=true despawnAck=true despawnSuppress=true interestRespawn=true finalDespawn=true selfExclude=true"
+        std::cout << "[REPLICATION-SELFTEST] spawn=true spawnAck=true spawnSuppress=true delta=true interestDespawn=true despawnAck=true despawnSuppress=true interestRespawn=true finalDespawn=true selfExclude=true remotePlayerVisible=true"
                   << " spawnFrame=" << spawnFrame.messages.size()
                   << " deltaFrame=" << deltaFrame.messages.size()
                   << " despawnFrame=" << despawnFrame.messages.size()
