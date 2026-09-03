@@ -3,10 +3,10 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
-#include <unordered_set>
 
 namespace SkyrimMP::Server
 {
@@ -20,6 +20,11 @@ namespace SkyrimMP::Server
             for (std::size_t i = 0; i < sizeof(T); ++i) {
                 out.push_back(static_cast<std::uint8_t>((u >> (i * 8)) & 0xFFu));
             }
+        }
+
+        void AppendFloat(std::vector<std::uint8_t>& out, float value)
+        {
+            AppendIntegral(out, std::bit_cast<std::uint32_t>(value));
         }
 
         template <class T>
@@ -49,6 +54,13 @@ namespace SkyrimMP::Server
             return value;
         }
 
+        void AppendKey(std::vector<std::uint8_t>& out, const CanonicalRecordKey& key)
+        {
+            AppendIntegral(out, static_cast<std::uint8_t>(key.kind == FormNamespaceKind::Light ? 1u : 0u));
+            AppendIntegral(out, key.namespaceIndex);
+            AppendIntegral(out, key.localId);
+        }
+
         CanonicalRecordKey ReadKey(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
         {
             CanonicalRecordKey key;
@@ -64,7 +76,7 @@ namespace SkyrimMP::Server
         {
             const auto kind = ReadIntegral<std::uint8_t>(bytes, offset);
             if (kind < static_cast<std::uint8_t>(SessionControlKind::Hello) ||
-                kind > static_cast<std::uint8_t>(SessionControlKind::Interest)) {
+                kind > static_cast<std::uint8_t>(SessionControlKind::WorldBootstrap)) {
                 throw std::runtime_error("authoritative session control kind invalid");
             }
             return static_cast<SessionControlKind>(kind);
@@ -153,6 +165,83 @@ namespace SkyrimMP::Server
             interest.exteriorRadiusCells = 1;
             return interest;
         }
+
+        struct BootstrapSelection
+        {
+            CanonicalRecordKey anchor;
+            WorldTransform transform;
+            RuntimeEntityLocation location;
+        };
+
+        BootstrapSelection SelectServerBootstrap(const RuntimeEntityRegistry& registry)
+        {
+            // Tamriel is a base-game full namespace worldspace. Select a deterministic
+            // placed REFR nearest world origin and use it only as Skyrim's MoveTo anchor.
+            const CanonicalRecordKey tamriel{ FormNamespaceKind::Full, 0, 0x3C };
+            const RuntimeEntityState* best = nullptr;
+            double bestDistanceSquared = (std::numeric_limits<double>::max)();
+
+            for (const auto& [id, entity] : registry.entities) {
+                (void)id;
+                if (entity.kind != RuntimeEntityKind::StaticReference ||
+                    !entity.hasSourceRecord ||
+                    entity.sourceRecord.kind != FormNamespaceKind::Full ||
+                    entity.sourceRecord.namespaceIndex > 4 ||
+                    !entity.location.exterior ||
+                    !entity.location.hasCell ||
+                    !entity.location.hasWorldspace ||
+                    entity.location.worldspace != tamriel ||
+                    !FiniteTransform(entity.transform)) {
+                    continue;
+                }
+
+                const auto x = static_cast<double>(entity.transform.x);
+                const auto y = static_cast<double>(entity.transform.y);
+                const auto distanceSquared = x * x + y * y;
+                if (!best || distanceSquared < bestDistanceSquared ||
+                    (distanceSquared == bestDistanceSquared && entity.id < best->id)) {
+                    best = &entity;
+                    bestDistanceSquared = distanceSquared;
+                }
+            }
+
+            if (!best) throw std::runtime_error("no deterministic Tamriel bootstrap reference available");
+
+            BootstrapSelection selection;
+            selection.anchor = best->sourceRecord;
+            selection.transform = best->transform;
+            selection.transform.z += 128.0f;
+            selection.location = best->location;
+            return selection;
+        }
+
+        std::vector<std::uint8_t> EncodeWorldBootstrap(
+            std::uint64_t sessionId,
+            NetworkEntityId playerEntityId,
+            const CanonicalRecordKey& anchor,
+            const RuntimeEntityState& player)
+        {
+            std::vector<std::uint8_t> out;
+            AppendIntegral(out, static_cast<std::uint8_t>(SessionControlKind::WorldBootstrap));
+            AppendIntegral(out, sessionId);
+            AppendIntegral(out, playerEntityId);
+            AppendKey(out, anchor);
+
+            std::uint8_t flags = 0;
+            if (player.location.exterior) flags |= 0x01;
+            if (player.location.hasCell) flags |= 0x02;
+            if (player.location.hasWorldspace) flags |= 0x04;
+            AppendIntegral(out, flags);
+            AppendKey(out, player.location.cell);
+            AppendKey(out, player.location.worldspace);
+            AppendFloat(out, player.transform.x);
+            AppendFloat(out, player.transform.y);
+            AppendFloat(out, player.transform.z);
+            AppendFloat(out, player.transform.pitch);
+            AppendFloat(out, player.transform.yaw);
+            AppendFloat(out, player.transform.roll);
+            return out;
+        }
     }
 
     void ServerSessionManager::ProcessAuthoritativeControlPackets(NetworkTransport& transport, RuntimeEntityRegistry& registry)
@@ -227,6 +316,48 @@ namespace SkyrimMP::Server
                     continue;
                 }
 
+                if (kind == SessionControlKind::BootstrapRequest) {
+                    EnsureConsumed(incoming.payload, offset);
+                    session.lastHeartbeat = std::chrono::steady_clock::now();
+                    ++stats_.bootstrapRequests;
+
+                    if (!session.hasPlayerEntity) {
+                        const auto bootstrap = SelectServerBootstrap(registry);
+                        session.playerEntityId = SpawnRuntimeEntity(
+                            registry,
+                            RuntimeEntityKind::Player,
+                            bootstrap.transform,
+                            bootstrap.location);
+                        session.hasPlayerEntity = true;
+                        session.bootstrapAnchor = bootstrap.anchor;
+                        session.hasBootstrapAnchor = true;
+                        session.replication.excludedEntityId = session.playerEntityId;
+                        session.replication.hasExcludedEntity = true;
+                        ++stats_.playerEntitiesSpawned;
+                    }
+
+                    const auto playerIt = registry.entities.find(session.playerEntityId);
+                    if (playerIt == registry.entities.end()) {
+                        throw std::runtime_error("authoritative bootstrap player entity missing");
+                    }
+                    if (!session.hasBootstrapAnchor) {
+                        throw std::runtime_error("authoritative bootstrap anchor missing");
+                    }
+
+                    session.interest = InterestFromPlayer(playerIt->second);
+                    session.hasInterest = true;
+                    transport.SendControl(
+                        incoming.endpoint,
+                        WireChannel::Reliable,
+                        EncodeWorldBootstrap(
+                            session.sessionId,
+                            session.playerEntityId,
+                            session.bootstrapAnchor,
+                            playerIt->second));
+                    ++stats_.bootstrapAssignments;
+                    continue;
+                }
+
                 if (kind != SessionControlKind::Interest) {
                     Reject(transport, incoming.endpoint, SessionRejectReason::Malformed);
                     continue;
@@ -238,40 +369,29 @@ namespace SkyrimMP::Server
                 EnsureConsumed(incoming.payload, offset);
                 session.lastHeartbeat = std::chrono::steady_clock::now();
 
-                if (!FiniteTransform(requested.transform)) {
+                // Protocol v3 forbids the client from creating its own authoritative player
+                // by reporting its single-player position. BootstrapRequest must happen first.
+                if (!session.hasPlayerEntity || !FiniteTransform(requested.transform)) {
                     ++stats_.playerStateRejected;
                     continue;
                 }
 
-                if (!session.hasPlayerEntity) {
-                    session.playerEntityId = SpawnRuntimeEntity(
-                        registry,
-                        RuntimeEntityKind::Player,
-                        requested.transform,
-                        requested.location);
-                    session.hasPlayerEntity = true;
-                    session.replication.excludedEntityId = session.playerEntityId;
-                    session.replication.hasExcludedEntity = true;
-                    ++stats_.playerEntitiesSpawned;
-                    ++stats_.playerStateApplied;
-                } else {
-                    const auto playerIt = registry.entities.find(session.playerEntityId);
-                    if (playerIt == registry.entities.end()) {
-                        throw std::runtime_error("authoritative player entity missing during update");
-                    }
-                    if (!ReasonableRequestedMove(playerIt->second, requested)) {
-                        ++stats_.playerStateRejected;
-                        continue;
-                    }
-                    if (!UpdateRuntimeEntity(registry, session.playerEntityId, requested.transform, requested.location)) {
-                        throw std::runtime_error("authoritative player update failed");
-                    }
-                    ++stats_.playerStateApplied;
-                }
-
                 const auto playerIt = registry.entities.find(session.playerEntityId);
-                if (playerIt == registry.entities.end()) throw std::runtime_error("authoritative player missing after apply");
-                session.interest = InterestFromPlayer(playerIt->second);
+                if (playerIt == registry.entities.end()) {
+                    throw std::runtime_error("authoritative player entity missing during update");
+                }
+                if (!ReasonableRequestedMove(playerIt->second, requested)) {
+                    ++stats_.playerStateRejected;
+                    continue;
+                }
+                if (!UpdateRuntimeEntity(registry, session.playerEntityId, requested.transform, requested.location)) {
+                    throw std::runtime_error("authoritative player update failed");
+                }
+                ++stats_.playerStateApplied;
+
+                const auto updatedPlayerIt = registry.entities.find(session.playerEntityId);
+                if (updatedPlayerIt == registry.entities.end()) throw std::runtime_error("authoritative player missing after apply");
+                session.interest = InterestFromPlayer(updatedPlayerIt->second);
                 session.hasInterest = true;
             } catch (const std::exception&) {
                 Reject(transport, incoming.endpoint, SessionRejectReason::Malformed);
