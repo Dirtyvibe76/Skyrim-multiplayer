@@ -142,6 +142,11 @@ namespace SkyrimMP::Server
         interested.reserve(interest.size());
 
         for (const auto id : interest) {
+            if (client.hasExcludedEntity && id == client.excludedEntityId) {
+                ++frame.selfExcluded;
+                ++client.selfEntitiesExcluded;
+                continue;
+            }
             if (!interested.insert(id).second) throw std::runtime_error("duplicate NetworkEntityId in runtime interest set");
             const auto entityIt = registry.entities.find(id);
             if (entityIt == registry.entities.end()) throw std::runtime_error("interest set references missing runtime entity");
@@ -178,6 +183,7 @@ namespace SkyrimMP::Server
         }
 
         for (const auto& [id, revision] : client.knownRevisions) {
+            if (client.hasExcludedEntity && id == client.excludedEntityId) continue;
             if (interested.contains(id) || client.pendingReliable.contains(id)) continue;
             ReplicationMessage message;
             message.kind = ReplicationMessageKind::Despawn;
@@ -253,17 +259,31 @@ namespace SkyrimMP::Server
         const auto& finalDespawn = FindMessage(finalFrame, ReplicationMessageKind::Despawn, testId);
         MarkReliableReplicationPending(client, finalDespawn);
         CommitReliableReplicationAck(client, finalDespawn);
+
+        const auto selfId = SpawnRuntimeEntity(registry, RuntimeEntityKind::Player, interiorTransform, interior);
+        ClientReplicationState selfFilteredClient;
+        selfFilteredClient.excludedEntityId = selfId;
+        selfFilteredClient.hasExcludedEntity = true;
+        subscription.location = interior;
+        subscription.transform = interiorTransform;
+        const auto selfFilteredFrame = BuildReplicationFrame(registry, selfFilteredClient, subscription);
+        if (HasMessage(selfFilteredFrame, ReplicationMessageKind::Spawn, selfId) || selfFilteredFrame.selfExcluded != 1) {
+            throw std::runtime_error("replication self-test failed local-player exclusion");
+        }
+        if (!DespawnRuntimeEntity(registry, selfId)) throw std::runtime_error("replication self-test self-filter entity cleanup failed");
+
         if (registry.entities.size() != registry.staticEntities) throw std::runtime_error("replication self-test leaked dynamic runtime entity");
 
         std::cout << "[REPLICATION] protocol=" << kReplicationProtocolVersion
-                  << " spawnReliable=true deltaReliable=false despawnReliable=true ackCommit=true deltaRefreshFrames=20"
+                  << " spawnReliable=true deltaReliable=false despawnReliable=true ackCommit=true deltaRefreshFrames=20 selfExclude=true"
                   << " exteriorRadiusCells=" << subscription.exteriorRadiusCells << '\n';
-        std::cout << "[REPLICATION-SELFTEST] spawn=true spawnAck=true spawnSuppress=true delta=true interestDespawn=true despawnAck=true despawnSuppress=true interestRespawn=true finalDespawn=true"
+        std::cout << "[REPLICATION-SELFTEST] spawn=true spawnAck=true spawnSuppress=true delta=true interestDespawn=true despawnAck=true despawnSuppress=true interestRespawn=true finalDespawn=true selfExclude=true"
                   << " spawnFrame=" << spawnFrame.messages.size()
                   << " deltaFrame=" << deltaFrame.messages.size()
                   << " despawnFrame=" << despawnFrame.messages.size()
                   << " respawnFrame=" << respawnFrame.messages.size()
-                  << " finalFrame=" << finalFrame.messages.size() << '\n';
+                  << " finalFrame=" << finalFrame.messages.size()
+                  << " selfFiltered=" << selfFilteredFrame.selfExcluded << '\n';
 
         RunWireProtocolSelfTest();
         RunNetworkTransportSelfTest();
