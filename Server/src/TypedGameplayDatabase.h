@@ -9,16 +9,16 @@
 
 namespace SkyrimMP::Server
 {
-    struct RawItemRef
+    struct ItemRef
     {
-        std::uint32_t rawFormId{};
+        CanonicalFormReference form;
         std::int32_t count{};
     };
 
-    struct RawLeveledEntry
+    struct LeveledEntry
     {
         std::int16_t level{};
-        std::uint32_t rawFormId{};
+        CanonicalFormReference form;
         std::int16_t count{};
     };
 
@@ -32,7 +32,7 @@ namespace SkyrimMP::Server
     struct NpcRecord : TypedRecordBase
     {
         std::uint32_t actorFlags{};
-        std::vector<RawItemRef> inventory;
+        std::vector<ItemRef> inventory;
     };
 
     struct WeaponRecord : TypedRecordBase
@@ -51,7 +51,7 @@ namespace SkyrimMP::Server
 
     struct AmmoRecord : TypedRecordBase
     {
-        std::uint32_t projectileRawFormId{};
+        CanonicalFormReference projectile;
         std::uint32_t flags{};
         float damage{};
         std::uint32_t value{};
@@ -59,14 +59,14 @@ namespace SkyrimMP::Server
 
     struct ContainerRecord : TypedRecordBase
     {
-        std::vector<RawItemRef> items;
+        std::vector<ItemRef> items;
     };
 
     struct LeveledItemRecord : TypedRecordBase
     {
         std::uint8_t chanceNone{};
         std::uint8_t flags{};
-        std::vector<RawLeveledEntry> entries;
+        std::vector<LeveledEntry> entries;
     };
 
     struct TypedGameplayDatabase
@@ -81,9 +81,13 @@ namespace SkyrimMP::Server
         std::uint64_t compressedRecords{};
         std::uint64_t inventoryEntries{};
         std::uint64_t leveledEntries{};
+        std::uint64_t canonicalReferences{};
+        std::uint64_t nullReferences{};
+        std::uint64_t unresolvedReferences{};
     };
 
     TypedGameplayDatabase BuildTypedGameplayDatabase(
         const CanonicalRecordDatabase& a_database,
-        const std::vector<PluginStackEntry>& a_stack);
+        const std::vector<PluginStackEntry>& a_stack,
+        const std::vector<PluginNamespace>& a_namespaces);
 }
