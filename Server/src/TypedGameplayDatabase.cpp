@@ -5,6 +5,7 @@
 #include <array>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <stdexcept>
 
 namespace SkyrimMP::Server
@@ -157,6 +158,12 @@ namespace SkyrimMP::Server
         const std::vector<PluginStackEntry>& a_stack)
     {
         TypedGameplayDatabase result;
+        std::uint64_t expectedTypedRecords{};
+        for (const auto& [key, record] : a_database.winners) {
+            (void)key;
+            if (IsTypedType(record.type)) ++expectedTypedRecords;
+        }
+
         for (std::size_t stackIndex = 0; stackIndex < a_stack.size(); ++stackIndex) {
             std::ifstream input(a_stack[stackIndex].path, std::ios::binary);
             if (!input) throw std::runtime_error("failed to open plugin for typed gameplay import: " + a_stack[stackIndex].path.string());
@@ -217,9 +224,40 @@ namespace SkyrimMP::Server
                 }
             }
         }
-        const auto expected = result.npcs.size() + result.weapons.size() + result.armors.size() +
-                              result.ammo.size() + result.containers.size() + result.leveledItems.size();
-        if (expected != result.parsedRecords) throw std::runtime_error("typed gameplay database record-count invariant failed");
+
+        const auto materialized = result.npcs.size() + result.weapons.size() + result.armors.size() +
+                                  result.ammo.size() + result.containers.size() + result.leveledItems.size();
+        if (materialized != result.parsedRecords || result.parsedRecords != expectedTypedRecords) {
+            throw std::runtime_error("typed gameplay database record-count invariant failed");
+        }
+
+        std::cout << "[TYPED] records=" << result.parsedRecords
+                  << " compressed=" << result.compressedRecords
+                  << " npc=" << result.npcs.size()
+                  << " weap=" << result.weapons.size()
+                  << " armo=" << result.armors.size()
+                  << " ammo=" << result.ammo.size()
+                  << " cont=" << result.containers.size()
+                  << " lvli=" << result.leveledItems.size()
+                  << " inventoryEntries=" << result.inventoryEntries
+                  << " leveledEntries=" << result.leveledEntries << '\n';
+
+        if (!result.weapons.empty()) {
+            const auto& r = result.weapons.front();
+            std::cout << "[TYPED-SAMPLE] WEAP EDID=" << r.editorId
+                      << " value=" << r.value << " weight=" << r.weight << " damage=" << r.damage << '\n';
+        }
+        if (!result.armors.empty()) {
+            const auto& r = result.armors.front();
+            std::cout << "[TYPED-SAMPLE] ARMO EDID=" << r.editorId
+                      << " value=" << r.value << " weight=" << r.weight << " armorRating=" << r.armorRating << '\n';
+        }
+        if (!result.ammo.empty()) {
+            const auto& r = result.ammo.front();
+            std::cout << "[TYPED-SAMPLE] AMMO EDID=" << r.editorId
+                      << " damage=" << r.damage << " value=" << r.value << '\n';
+        }
+
         return result;
     }
 }
