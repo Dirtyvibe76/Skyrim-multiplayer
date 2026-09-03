@@ -2,6 +2,7 @@
 #include "BethesdaRecordScanner.h"
 #include "CanonicalRecordDatabase.h"
 #include "FormIdResolver.h"
+#include "GameplayPayloadImporter.h"
 #include "PluginStack.h"
 
 #include <windows.h>
@@ -233,7 +234,8 @@ namespace
         const ServerConfig& config,
         const std::vector<ManifestFile>& files,
         const std::vector<SkyrimMP::Server::PluginStackEntry>& pluginStack,
-        const std::vector<SkyrimMP::Server::PluginNamespace>& formNamespaces)
+        const std::vector<SkyrimMP::Server::PluginNamespace>& formNamespaces,
+        const SkyrimMP::Server::PluginLoadOrderInfo& loadOrderInfo)
     {
         const auto parent = config.manifestPath.parent_path();
         if (!parent.empty()) {
@@ -253,8 +255,9 @@ namespace
         }
 
         out << "{\n";
-        out << "  \"schema\": 4,\n";
+        out << "  \"schema\": 5,\n";
         out << "  \"serverName\": \"" << JsonEscape(config.name) << "\",\n";
+        out << "  \"loadOrderRevision\": \"" << JsonEscape(loadOrderInfo.revisionHash) << "\",\n";
         out << "  \"fileCount\": " << files.size() << ",\n";
         out << "  \"pluginCount\": " << pluginCount << ",\n";
         out << "  \"totalBytes\": " << totalBytes << ",\n";
@@ -329,8 +332,9 @@ int main(int argc, char** argv)
         }
 
         const auto pluginStack = SkyrimMP::Server::ResolvePluginStack(hostedPlugins, config.gameDataPath);
+        const auto& loadOrderInfo = SkyrimMP::Server::GetLastPluginLoadOrderInfo();
         const auto formNamespaces = SkyrimMP::Server::BuildFormNamespaces(pluginStack);
-        WriteManifest(config, files, pluginStack, formNamespaces);
+        WriteManifest(config, files, pluginStack, formNamespaces, loadOrderInfo);
 
         const auto pluginCount = std::count_if(files.begin(), files.end(), [](const auto& file) { return file.plugin; });
         std::cout << "[MODS] files=" << files.size() << " plugins=" << pluginCount << '\n';
@@ -394,8 +398,33 @@ int main(int argc, char** argv)
                   << " overrides=" << recordDatabase.overrideCount
                   << " typeMismatchOverrides=" << recordDatabase.typeMismatchOverrides << '\n';
 
+        std::cout << "[PAYLOAD] importing authoritative gameplay record payloads\n";
+        const auto payloadSummary = SkyrimMP::Server::ImportGameplayPayloads(recordDatabase, pluginStack);
+        std::cout << "[PAYLOAD] candidates=" << payloadSummary.candidateRecords
+                  << " parsed=" << payloadSummary.parsedRecords
+                  << " compressedDeferred=" << payloadSummary.deferredCompressed
+                  << " subrecords=" << payloadSummary.subrecords
+                  << " editorIds=" << payloadSummary.editorIds
+                  << " types=" << payloadSummary.typeCounts.size() << '\n';
+        for (const auto& [type, count] : payloadSummary.typeCounts) {
+            std::cout << "[PAYLOAD-TYPE] " << type << '=' << count << '\n';
+        }
+        for (const auto& sample : payloadSummary.samples) {
+            std::cout << "[PAYLOAD-SAMPLE] type=" << sample.type
+                      << " namespace=" << SkyrimMP::Server::FormNamespaceKindName(sample.key.kind)
+                      << ':' << sample.key.namespaceIndex
+                      << ":0x" << std::hex << std::uppercase << sample.key.localId
+                      << std::dec << std::nouppercase
+                      << " plugin=" << sample.plugin
+                      << " subrecords=" << sample.subrecordCount;
+            if (!sample.editorId.empty()) {
+                std::cout << " EDID=" << sample.editorId;
+            }
+            std::cout << '\n';
+        }
+
         std::cout << "[MODS] manifest=" << fs::absolute(config.manifestPath).string() << '\n';
-        std::cout << "[PASS] server canonical record database + winning overrides complete\n";
+        std::cout << "[PASS] server canonical database + uncompressed gameplay payload import complete\n";
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "[FATAL] " << ex.what() << '\n';
