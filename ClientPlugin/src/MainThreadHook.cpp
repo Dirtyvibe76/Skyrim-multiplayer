@@ -19,10 +19,18 @@ namespace SkyrimMP
         constexpr float kMoveThreshold = 32.0f;
         constexpr float kMoveThresholdSquared = kMoveThreshold * kMoveThreshold;
         constexpr float kRotationThreshold = 0.05f;
+        constexpr float kPi = 3.14159265358979323846f;
+        constexpr float kTwoPi = 2.0f * kPi;
+        constexpr float kWriteProbeOffsetX = 8.0f;
+        constexpr auto kWriteProbeDelay = 5s;
 
         std::unordered_map<std::uint32_t, std::uint32_t> g_knownActors;
         std::unordered_set<std::uint32_t> g_relevantActors;
         std::unordered_map<std::uint32_t, ActorState> g_lastRelevantState;
+
+        bool g_writeProbeComplete = false;
+        std::uint32_t g_writeProbeCandidate = 0;
+        std::chrono::steady_clock::time_point g_writeProbeCandidateSince{};
 
         ActorState ReadActorState(RE::Actor* a_actor, std::uint32_t a_baseFormId)
         {
@@ -85,11 +93,20 @@ namespace SkyrimMP
             return dx * dx + dy * dy + dz * dz >= kMoveThresholdSquared;
         }
 
+        float WrappedAngleDelta(float a_current, float a_previous)
+        {
+            float delta = std::fmod(std::fabs(a_current - a_previous), kTwoPi);
+            if (delta > kPi) {
+                delta = kTwoPi - delta;
+            }
+            return delta;
+        }
+
         bool RotationChanged(const ActorState& a_current, const ActorState& a_previous)
         {
-            return std::fabs(a_current.rotation.x - a_previous.rotation.x) >= kRotationThreshold ||
-                   std::fabs(a_current.rotation.y - a_previous.rotation.y) >= kRotationThreshold ||
-                   std::fabs(a_current.rotation.z - a_previous.rotation.z) >= kRotationThreshold;
+            return WrappedAngleDelta(a_current.rotation.x, a_previous.rotation.x) >= kRotationThreshold ||
+                   WrappedAngleDelta(a_current.rotation.y, a_previous.rotation.y) >= kRotationThreshold ||
+                   WrappedAngleDelta(a_current.rotation.z, a_previous.rotation.z) >= kRotationThreshold;
         }
 
         void LogSpawn(const ActorState& a_state)
@@ -109,6 +126,108 @@ namespace SkyrimMP
                 a_state.rotation.z);
         }
 
+        void ResetWriteProbeCandidate()
+        {
+            g_writeProbeCandidate = 0;
+            g_writeProbeCandidateSince = {};
+        }
+
+        void ConsiderWriteProbeCandidate(std::uint32_t a_runtimeFormId)
+        {
+            if (g_writeProbeComplete || a_runtimeFormId == 0) {
+                return;
+            }
+
+            if (g_writeProbeCandidate != a_runtimeFormId) {
+                g_writeProbeCandidate = a_runtimeFormId;
+                g_writeProbeCandidateSince = std::chrono::steady_clock::now();
+                logs::info("[REMOTE WRITE PROBE] candidate form={:08X}; waiting 5 seconds", a_runtimeFormId);
+            }
+        }
+
+        void RunControlledPositionWriteProbe()
+        {
+            if (g_writeProbeComplete ||
+                g_writeProbeCandidate == 0 ||
+                g_writeProbeCandidateSince.time_since_epoch().count() == 0 ||
+                std::chrono::steady_clock::now() - g_writeProbeCandidateSince < kWriteProbeDelay) {
+                return;
+            }
+
+            if (!g_relevantActors.contains(g_writeProbeCandidate)) {
+                ResetWriteProbeCandidate();
+                return;
+            }
+
+            const auto knownIt = g_knownActors.find(g_writeProbeCandidate);
+            if (knownIt == g_knownActors.end()) {
+                ResetWriteProbeCandidate();
+                return;
+            }
+
+            auto* form = RE::TESForm::LookupByID(g_writeProbeCandidate);
+            if (!form) {
+                ResetWriteProbeCandidate();
+                return;
+            }
+
+            auto* actor = form->As<RE::Actor>();
+            if (!actor || !actor->Get3D()) {
+                ResetWriteProbeCandidate();
+                return;
+            }
+
+            const auto before = ReadActorState(actor, knownIt->second);
+            if (before.runtimeFormId == 0 || before.cellFormId == 0) {
+                ResetWriteProbeCandidate();
+                return;
+            }
+
+            // Simulate one inbound server-authoritative POD position update.
+            // The offset is deliberately tiny and is restored immediately in
+            // the same update callback to minimize interference with Skyrim AI.
+            const RE::NiPoint3 requested{
+                before.position.x + kWriteProbeOffsetX,
+                before.position.y,
+                before.position.z
+            };
+
+            logs::info(
+                "[REMOTE WRITE BEGIN] form={:08X} before=({:.2f},{:.2f},{:.2f}) requested=({:.2f},{:.2f},{:.2f})",
+                before.runtimeFormId,
+                before.position.x,
+                before.position.y,
+                before.position.z,
+                requested.x,
+                requested.y,
+                requested.z);
+
+            actor->SetPosition(requested, true);
+
+            const auto appliedPosition = actor->GetPosition();
+            logs::info(
+                "[REMOTE WRITE APPLIED] form={:08X} observed=({:.2f},{:.2f},{:.2f})",
+                before.runtimeFormId,
+                appliedPosition.x,
+                appliedPosition.y,
+                appliedPosition.z);
+
+            actor->SetPosition(
+                RE::NiPoint3{ before.position.x, before.position.y, before.position.z },
+                true);
+
+            const auto restoredPosition = actor->GetPosition();
+            logs::info(
+                "[REMOTE WRITE RESTORED] form={:08X} observed=({:.2f},{:.2f},{:.2f})",
+                before.runtimeFormId,
+                restoredPosition.x,
+                restoredPosition.y,
+                restoredPosition.z);
+
+            g_writeProbeComplete = true;
+            ResetWriteProbeCandidate();
+        }
+
         void SampleRelevantActors()
         {
             const auto playerState = RuntimeProbe::ReadLocalPlayer();
@@ -117,6 +236,7 @@ namespace SkyrimMP
             }
 
             std::unordered_set<std::uint32_t> currentRelevant;
+            std::uint32_t firstRelevant = 0;
 
             for (const auto& [runtimeFormId, baseFormId] : g_knownActors) {
                 if (runtimeFormId == playerState.formId) {
@@ -139,6 +259,10 @@ namespace SkyrimMP
                 }
 
                 currentRelevant.insert(runtimeFormId);
+                if (firstRelevant == 0 && actor->Get3D()) {
+                    firstRelevant = runtimeFormId;
+                }
+
                 const auto previousIt = g_lastRelevantState.find(runtimeFormId);
 
                 if (previousIt == g_lastRelevantState.end()) {
@@ -215,6 +339,16 @@ namespace SkyrimMP
                     playerState.cellFormId,
                     playerState.worldspaceFormId);
             }
+
+            if (!g_writeProbeComplete) {
+                if (g_writeProbeCandidate == 0 || !g_relevantActors.contains(g_writeProbeCandidate)) {
+                    if (firstRelevant != 0) {
+                        ConsiderWriteProbeCandidate(firstRelevant);
+                    } else {
+                        ResetWriteProbeCandidate();
+                    }
+                }
+            }
         }
     }
 
@@ -223,7 +357,7 @@ namespace SkyrimMP
         REL::Relocation<std::uintptr_t> playerVTable{ RE::VTABLE_PlayerCharacter[0] };
         originalUpdate = playerVTable.write_vfunc(0xAD, Update);
 
-        logs::info("[RE-0.4i] PlayerCharacter::Update hook installed; actor delta output enabled");
+        logs::info("[RE-0.5a] PlayerCharacter::Update hook installed; controlled inbound position write probe armed");
     }
 
     void MainThreadHook::ResetActorCache()
@@ -231,7 +365,9 @@ namespace SkyrimMP
         g_knownActors.clear();
         g_relevantActors.clear();
         g_lastRelevantState.clear();
-        logs::info("[RE-0.4i] actor discovery, relevance, and delta caches reset");
+        g_writeProbeComplete = false;
+        ResetWriteProbeCandidate();
+        logs::info("[RE-0.5a] actor caches reset; controlled write probe re-armed");
     }
 
     void MainThreadHook::Update(RE::Actor* a_actor, float a_delta)
@@ -243,7 +379,7 @@ namespace SkyrimMP
         static bool firstUpdateLogged = false;
 
         if (!firstUpdateLogged) {
-            logs::info("[RE-0.4i] PlayerCharacter::Update hook executing");
+            logs::info("[RE-0.5a] PlayerCharacter::Update hook executing");
             firstUpdateLogged = true;
         }
 
@@ -262,6 +398,10 @@ namespace SkyrimMP
             if (!event.loaded) {
                 const bool wasRelevant = g_relevantActors.erase(event.formId) > 0;
                 g_lastRelevantState.erase(event.formId);
+
+                if (event.formId == g_writeProbeCandidate) {
+                    ResetWriteProbeCandidate();
+                }
 
                 const auto it = g_knownActors.find(event.formId);
                 if (it != g_knownActors.end()) {
@@ -309,6 +449,7 @@ namespace SkyrimMP
             now - lastActorSample >= 500ms) {
 
             SampleRelevantActors();
+            RunControlledPositionWriteProbe();
             lastActorSample = now;
         }
     }
