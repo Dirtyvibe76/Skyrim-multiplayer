@@ -197,13 +197,9 @@ namespace SkyrimMP::Server
 
     TypedGameplayDatabase BuildTypedGameplayDatabase(
         const CanonicalRecordDatabase& a_database,
-        const std::vector<PluginStackEntry>& a_stack,
-        const std::vector<PluginNamespace>& a_namespaces)
+        const std::vector<PluginStackEntry>& a_stack)
     {
-        if (a_stack.size() != a_namespaces.size()) {
-            throw std::runtime_error("typed gameplay stack and namespace table size mismatch");
-        }
-
+        const auto namespaces = BuildFormNamespaces(a_stack);
         TypedGameplayDatabase result;
         std::uint64_t expectedTypedRecords{};
         for (const auto& [key, record] : a_database.winners) {
@@ -231,7 +227,7 @@ namespace SkyrimMP::Server
                     typed.actorFlags = parsed.actorFlags;
                     typed.inventory.reserve(parsed.items.size());
                     for (const auto& item : parsed.items) {
-                        typed.inventory.push_back({ ResolveReference(item.rawFormId, a_stack[stackIndex], a_stack, a_namespaces, record, "NPC_.CNTO", result), item.count });
+                        typed.inventory.push_back({ ResolveReference(item.rawFormId, a_stack[stackIndex], a_stack, namespaces, record, "NPC_.CNTO", result), item.count });
                     }
                     result.inventoryEntries += typed.inventory.size();
                     result.npcs.push_back(std::move(typed));
@@ -252,7 +248,7 @@ namespace SkyrimMP::Server
                 } else if (record.type == "AMMO") {
                     AmmoRecord typed;
                     static_cast<TypedRecordBase&>(typed) = base;
-                    typed.projectile = ResolveReference(parsed.projectile, a_stack[stackIndex], a_stack, a_namespaces, record, "AMMO.DATA.projectile", result);
+                    typed.projectile = ResolveReference(parsed.projectile, a_stack[stackIndex], a_stack, namespaces, record, "AMMO.DATA.projectile", result);
                     typed.flags = parsed.ammoFlags;
                     typed.damage = parsed.ammoDamage;
                     typed.value = parsed.ammoValue;
@@ -262,7 +258,7 @@ namespace SkyrimMP::Server
                     static_cast<TypedRecordBase&>(typed) = base;
                     typed.items.reserve(parsed.items.size());
                     for (const auto& item : parsed.items) {
-                        typed.items.push_back({ ResolveReference(item.rawFormId, a_stack[stackIndex], a_stack, a_namespaces, record, "CONT.CNTO", result), item.count });
+                        typed.items.push_back({ ResolveReference(item.rawFormId, a_stack[stackIndex], a_stack, namespaces, record, "CONT.CNTO", result), item.count });
                     }
                     result.inventoryEntries += typed.items.size();
                     result.containers.push_back(std::move(typed));
@@ -273,7 +269,7 @@ namespace SkyrimMP::Server
                     typed.flags = parsed.leveledFlags;
                     typed.entries.reserve(parsed.leveled.size());
                     for (const auto& entry : parsed.leveled) {
-                        typed.entries.push_back({ entry.level, ResolveReference(entry.rawFormId, a_stack[stackIndex], a_stack, a_namespaces, record, "LVLI.LVLO", result), entry.count });
+                        typed.entries.push_back({ entry.level, ResolveReference(entry.rawFormId, a_stack[stackIndex], a_stack, namespaces, record, "LVLI.LVLO", result), entry.count });
                     }
                     result.leveledEntries += typed.entries.size();
                     result.leveledItems.push_back(std::move(typed));
