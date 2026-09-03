@@ -9,6 +9,7 @@ on:
       - 'ClientPlugin/**'
       - 'Shared/**'
       - 'ClientPackage/**'
+      - 'ClientLauncher/**'
       - 'External/**'
       - 'xmake.lua'
       - '.gitmodules'
@@ -37,20 +38,24 @@ jobs:
         shell: cmd
         run: xmake build -vD SkyrimMultiplayer
 
+      - name: Build standalone launcher EXE
+        shell: powershell
+        run: dotnet publish ClientLauncher\SkyrimMPLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o launcher-publish
+
       - name: Stage client package
         shell: powershell
         run: |
           $stage = Join-Path $PWD 'artifact\SkyrimMultiplayer-Client'
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item 'build\windows\x64\releasedbg\SkyrimMultiplayer.dll' $stage
-          Copy-Item 'ClientPackage\Install-Client.ps1' $stage
-          Copy-Item 'ClientPackage\Connect-To-SkyrimMP.ps1' $stage
-          Copy-Item 'ClientPackage\SkyrimMP-Launcher.ps1' $stage
-          Copy-Item 'ClientPackage\SkyrimMP Launcher.cmd' $stage
+          Copy-Item 'launcher-publish\SkyrimMPLauncher.exe' $stage
           Copy-Item 'ClientPackage\README.txt' $stage
           Get-FileHash (Join-Path $stage 'SkyrimMultiplayer.dll') -Algorithm SHA256 |
             ForEach-Object { "SkyrimMultiplayer.dll SHA256=$($_.Hash)" } |
             Set-Content (Join-Path $stage 'SHA256.txt')
+          Get-FileHash (Join-Path $stage 'SkyrimMPLauncher.exe') -Algorithm SHA256 |
+            ForEach-Object { "SkyrimMPLauncher.exe SHA256=$($_.Hash)" } |
+            Add-Content (Join-Path $stage 'SHA256.txt')
 
       - name: Upload downloadable client package
         uses: actions/upload-artifact@v4
