@@ -3,6 +3,11 @@ Name=SkyrimMP Server
 Port=10578
 MaxPlayers=64
 
+[Game]
+; Dedicated server imports required Bethesda master plugins from an owned Skyrim installation.
+; Base-game files are not part of the hosted mod download manifest.
+DataPath=G:\SteamLibrary\steamapps\common\Skyrim Special Edition\Data
+
 [Mods]
 Path=Mods
 Manifest=modmanifest.json
