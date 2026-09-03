@@ -217,7 +217,11 @@ namespace SkyrimMP::Server
             if (count == SOCKET_ERROR) {
                 const auto error = WSAGetLastError();
                 if (error == WSAEWOULDBLOCK) return;
-                throw std::runtime_error("UDP server receive failed");
+                // Windows reports ICMP "port unreachable" from a recently closed UDP client as
+                // WSAECONNRESET on the next recvfrom(). A dedicated server must survive clients
+                // exiting or crashing; the application/session timeout owns cleanup.
+                if (error == WSAECONNRESET) continue;
+                throw std::runtime_error("UDP server receive failed, WSA error=" + std::to_string(error));
             }
             if (count <= 0) return;
 
