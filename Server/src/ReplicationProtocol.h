@@ -8,7 +8,7 @@
 
 namespace SkyrimMP::Server
 {
-    constexpr std::uint16_t kReplicationProtocolVersion = 2;
+    constexpr std::uint16_t kReplicationProtocolVersion = 3;
 
     enum class ReplicationMessageKind : std::uint8_t
     {
@@ -52,13 +52,9 @@ namespace SkyrimMP::Server
 
     struct ClientReplicationState
     {
-        // ACK-confirmed remote state only.
         std::unordered_map<NetworkEntityId, std::uint64_t> knownRevisions;
-        // Reliable Spawn/Despawn operations sent but not yet ACK-confirmed.
         std::unordered_map<NetworkEntityId, PendingReliableEntityState> pendingReliable;
-        // Last unreliable revision sent; this is not delivery confirmation.
         std::unordered_map<NetworkEntityId, std::uint64_t> lastUnreliableSentRevision;
-        // The authoritative Player entity owned by this client. It must never be replicated back to itself.
         NetworkEntityId excludedEntityId{};
         bool hasExcludedEntity{};
         std::uint64_t framesBuilt{};
