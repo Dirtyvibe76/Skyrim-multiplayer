@@ -1,4 +1,5 @@
 #include "WorldReferenceDatabase.h"
+#include "WorldSpatialContext.h"
 
 #include <zlib.h>
 
@@ -248,6 +249,11 @@ namespace SkyrimMP::Server
                           << " rot=(" << r.transform.pitch << ',' << r.transform.yaw << ',' << r.transform.roll << ')';
             }
             std::cout << '\n';
+        }
+
+        const auto spatial = BuildWorldSpatialContextDatabase(a_database, a_stack);
+        if (spatial.referenceRecords != world.parsedRecords) {
+            throw std::runtime_error("world reference/spatial-context record-count invariant failed");
         }
 
         return world;
