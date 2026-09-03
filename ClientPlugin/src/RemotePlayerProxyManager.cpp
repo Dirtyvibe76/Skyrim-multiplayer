@@ -13,6 +13,7 @@ namespace SkyrimMP
     namespace
     {
         constexpr std::size_t kMaxNativeProxies = 1;
+        constexpr std::uint32_t kProxySequenceBase = 0x40000000u;
 
         enum class ProxyCommandKind : std::uint8_t
         {
@@ -43,6 +44,11 @@ namespace SkyrimMP
         bool IsDynamicPlayerEntity(std::uint64_t id)
         {
             return (id & (1ull << 63)) != 0;
+        }
+
+        std::uint32_t AdapterSequence(std::uint64_t revision)
+        {
+            return kProxySequenceBase | (static_cast<std::uint32_t>(revision) & 0x3FFFFFFFu);
         }
 
         void QueueLocked(ProxyCommand command)
@@ -138,7 +144,7 @@ namespace SkyrimMP
 
             RemoteActorAdapter::Enqueue(RemoteTransform{
                 actor->GetFormID(),
-                static_cast<std::uint32_t>(update.revision),
+                AdapterSequence(update.revision),
                 update.position,
                 update.rotation
             });
@@ -184,7 +190,7 @@ namespace SkyrimMP
             proxy.lastRevision = update.revision;
             RemoteActorAdapter::Enqueue(RemoteTransform{
                 actor->GetFormID(),
-                static_cast<std::uint32_t>(update.revision),
+                AdapterSequence(update.revision),
                 update.position,
                 update.rotation
             });
@@ -253,6 +259,6 @@ namespace SkyrimMP
         g_pending.clear();
         for (auto& [id, proxy] : g_proxies) DestroyProxy(id, proxy, "reset");
         g_proxies.clear();
-        logs::info("[REMOTE PLAYER PROXY] reset maxNativeProxies={}", kMaxNativeProxies);
+        logs::info("[REMOTE PLAYER PROXY] reset maxNativeProxies={} adapterSequenceBase=0x{:08X}", kMaxNativeProxies, kProxySequenceBase);
     }
 }
