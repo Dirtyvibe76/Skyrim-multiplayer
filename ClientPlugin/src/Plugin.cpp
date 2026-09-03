@@ -1,7 +1,6 @@
 #include "pch.h"
 
 #include "RuntimeProbe.h"
-#include "ActorProbe.h"
 
 namespace
 {
@@ -15,7 +14,7 @@ namespace
             return;
         }
 
-        logs::info("[RE-0.4] safe probe scheduler started");
+        logs::info("[RE-0.4a] player probe scheduler started; actor probe disabled pending main-thread hook");
 
         std::thread([]()
         {
@@ -30,7 +29,6 @@ namespace
                 taskInterface->AddTask([]()
                 {
                     SkyrimMP::RuntimeProbe::LogLocalPlayer();
-                    SkyrimMP::ActorProbe::Sample();
                 });
             }
         }).detach();
@@ -44,16 +42,16 @@ namespace
 
         switch (a_message->type) {
         case SKSE::MessagingInterface::kDataLoaded:
-            logs::info("[RE-0.4] Skyrim data loaded");
+            logs::info("[RE-0.4a] Skyrim data loaded");
             break;
 
         case SKSE::MessagingInterface::kPostLoadGame:
-            logs::info("[RE-0.4] save loaded");
+            logs::info("[RE-0.4a] save loaded");
             StartProbeScheduler();
             break;
 
         case SKSE::MessagingInterface::kNewGame:
-            logs::info("[RE-0.4] new game");
+            logs::info("[RE-0.4a] new game");
             StartProbeScheduler();
             break;
 
@@ -67,7 +65,7 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 {
     SKSE::Init(a_skse);
 
-    logs::info("Skyrim Multiplayer RE-0.4 loaded");
+    logs::info("Skyrim Multiplayer RE-0.4a loaded");
 
     const auto runtime = REL::Module::get().version();
 
@@ -81,7 +79,7 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
     auto* messaging = SKSE::GetMessagingInterface();
 
     if (!messaging || !messaging->RegisterListener(MessageHandler)) {
-        logs::critical("[RE-0.4] failed to register SKSE messaging listener");
+        logs::critical("[RE-0.4a] failed to register SKSE messaging listener");
         return false;
     }
 
