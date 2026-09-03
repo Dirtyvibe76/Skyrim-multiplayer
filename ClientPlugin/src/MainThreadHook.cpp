@@ -5,6 +5,7 @@
 #include "ObjectLoadProbe.h"
 #include "ActorState.h"
 
+#include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -15,9 +16,13 @@ namespace SkyrimMP
         constexpr float kExteriorRelevanceRadius = 12000.0f;
         constexpr float kExteriorRelevanceRadiusSquared =
             kExteriorRelevanceRadius * kExteriorRelevanceRadius;
+        constexpr float kMoveThreshold = 32.0f;
+        constexpr float kMoveThresholdSquared = kMoveThreshold * kMoveThreshold;
+        constexpr float kRotationThreshold = 0.05f;
 
         std::unordered_map<std::uint32_t, std::uint32_t> g_knownActors;
         std::unordered_set<std::uint32_t> g_relevantActors;
+        std::unordered_map<std::uint32_t, ActorState> g_lastRelevantState;
 
         ActorState ReadActorState(RE::Actor* a_actor, std::uint32_t a_baseFormId)
         {
@@ -55,15 +60,11 @@ namespace SkyrimMP
                 return false;
             }
 
-            // Interiors have no worldspace. For this first relevance contract,
-            // only actors in the player's exact interior cell are relevant.
             if (a_player.worldspaceFormId == 0) {
                 return a_actor.worldspaceFormId == 0 &&
                        a_actor.cellFormId == a_player.cellFormId;
             }
 
-            // Exterior actors must share the player's worldspace and fall
-            // inside the provisional client-observation radius.
             if (a_actor.worldspaceFormId != a_player.worldspaceFormId) {
                 return false;
             }
@@ -74,6 +75,38 @@ namespace SkyrimMP
             const float distanceSquared = dx * dx + dy * dy + dz * dz;
 
             return distanceSquared <= kExteriorRelevanceRadiusSquared;
+        }
+
+        bool PositionChanged(const ActorState& a_current, const ActorState& a_previous)
+        {
+            const float dx = a_current.position.x - a_previous.position.x;
+            const float dy = a_current.position.y - a_previous.position.y;
+            const float dz = a_current.position.z - a_previous.position.z;
+            return dx * dx + dy * dy + dz * dz >= kMoveThresholdSquared;
+        }
+
+        bool RotationChanged(const ActorState& a_current, const ActorState& a_previous)
+        {
+            return std::fabs(a_current.rotation.x - a_previous.rotation.x) >= kRotationThreshold ||
+                   std::fabs(a_current.rotation.y - a_previous.rotation.y) >= kRotationThreshold ||
+                   std::fabs(a_current.rotation.z - a_previous.rotation.z) >= kRotationThreshold;
+        }
+
+        void LogSpawn(const ActorState& a_state)
+        {
+            logs::info(
+                "[ACTOR SPAWN] form={:08X} base={:08X} cell={:08X} world={:08X} "
+                "pos=({:.2f},{:.2f},{:.2f}) rot=({:.3f},{:.3f},{:.3f})",
+                a_state.runtimeFormId,
+                a_state.baseFormId,
+                a_state.cellFormId,
+                a_state.worldspaceFormId,
+                a_state.position.x,
+                a_state.position.y,
+                a_state.position.z,
+                a_state.rotation.x,
+                a_state.rotation.y,
+                a_state.rotation.z);
         }
 
         void SampleRelevantActors()
@@ -106,29 +139,52 @@ namespace SkyrimMP
                 }
 
                 currentRelevant.insert(runtimeFormId);
+                const auto previousIt = g_lastRelevantState.find(runtimeFormId);
 
-                if (!g_relevantActors.contains(runtimeFormId)) {
+                if (previousIt == g_lastRelevantState.end()) {
                     logs::info(
                         "[ACTOR RELEVANCE ENTER] form={:08X} base={:08X} cell={:08X} world={:08X}",
                         state.runtimeFormId,
                         state.baseFormId,
                         state.cellFormId,
                         state.worldspaceFormId);
+                    LogSpawn(state);
+                    g_lastRelevantState.insert_or_assign(runtimeFormId, state);
+                    continue;
                 }
 
-                logs::info(
-                    "[ACTOR SNAPSHOT] form={:08X} base={:08X} cell={:08X} world={:08X} "
-                    "pos=({:.2f},{:.2f},{:.2f}) rot=({:.3f},{:.3f},{:.3f})",
-                    state.runtimeFormId,
-                    state.baseFormId,
-                    state.cellFormId,
-                    state.worldspaceFormId,
-                    state.position.x,
-                    state.position.y,
-                    state.position.z,
-                    state.rotation.x,
-                    state.rotation.y,
-                    state.rotation.z);
+                const auto& previous = previousIt->second;
+
+                if (state.cellFormId != previous.cellFormId ||
+                    state.worldspaceFormId != previous.worldspaceFormId) {
+                    logs::info(
+                        "[ACTOR TRANSITION] form={:08X} cell={:08X}->{:08X} world={:08X}->{:08X}",
+                        state.runtimeFormId,
+                        previous.cellFormId,
+                        state.cellFormId,
+                        previous.worldspaceFormId,
+                        state.worldspaceFormId);
+                }
+
+                if (PositionChanged(state, previous)) {
+                    logs::info(
+                        "[ACTOR MOVE] form={:08X} pos=({:.2f},{:.2f},{:.2f})",
+                        state.runtimeFormId,
+                        state.position.x,
+                        state.position.y,
+                        state.position.z);
+                }
+
+                if (RotationChanged(state, previous)) {
+                    logs::info(
+                        "[ACTOR ROTATE] form={:08X} rot=({:.3f},{:.3f},{:.3f})",
+                        state.runtimeFormId,
+                        state.rotation.x,
+                        state.rotation.y,
+                        state.rotation.z);
+                }
+
+                g_lastRelevantState.insert_or_assign(runtimeFormId, state);
             }
 
             for (const auto runtimeFormId : g_relevantActors) {
@@ -139,18 +195,26 @@ namespace SkyrimMP
                         "[ACTOR RELEVANCE EXIT] form={:08X} base={:08X}",
                         runtimeFormId,
                         baseFormId);
+                    logs::info(
+                        "[ACTOR DESPAWN] form={:08X} base={:08X} reason=relevance",
+                        runtimeFormId,
+                        baseFormId);
+                    g_lastRelevantState.erase(runtimeFormId);
                 }
             }
 
+            const bool setChanged = currentRelevant != g_relevantActors;
             g_relevantActors = std::move(currentRelevant);
 
-            logs::info(
-                "[ACTOR RELEVANCE SET] relevant={} known={} mode={} cell={:08X} world={:08X}",
-                g_relevantActors.size(),
-                g_knownActors.size(),
-                playerState.worldspaceFormId == 0 ? "interior" : "exterior",
-                playerState.cellFormId,
-                playerState.worldspaceFormId);
+            if (setChanged) {
+                logs::info(
+                    "[ACTOR RELEVANCE SET] relevant={} known={} mode={} cell={:08X} world={:08X}",
+                    g_relevantActors.size(),
+                    g_knownActors.size(),
+                    playerState.worldspaceFormId == 0 ? "interior" : "exterior",
+                    playerState.cellFormId,
+                    playerState.worldspaceFormId);
+            }
         }
     }
 
@@ -159,14 +223,15 @@ namespace SkyrimMP
         REL::Relocation<std::uintptr_t> playerVTable{ RE::VTABLE_PlayerCharacter[0] };
         originalUpdate = playerVTable.write_vfunc(0xAD, Update);
 
-        logs::info("[RE-0.4h] PlayerCharacter::Update hook installed; relevance-filtered actor snapshots enabled");
+        logs::info("[RE-0.4i] PlayerCharacter::Update hook installed; actor delta output enabled");
     }
 
     void MainThreadHook::ResetActorCache()
     {
         g_knownActors.clear();
         g_relevantActors.clear();
-        logs::info("[RE-0.4h] actor discovery and relevance caches reset");
+        g_lastRelevantState.clear();
+        logs::info("[RE-0.4i] actor discovery, relevance, and delta caches reset");
     }
 
     void MainThreadHook::Update(RE::Actor* a_actor, float a_delta)
@@ -178,7 +243,7 @@ namespace SkyrimMP
         static bool firstUpdateLogged = false;
 
         if (!firstUpdateLogged) {
-            logs::info("[RE-0.4h] PlayerCharacter::Update hook executing");
+            logs::info("[RE-0.4i] PlayerCharacter::Update hook executing");
             firstUpdateLogged = true;
         }
 
@@ -195,10 +260,18 @@ namespace SkyrimMP
 
         for (const auto& event : pending) {
             if (!event.loaded) {
-                g_relevantActors.erase(event.formId);
+                const bool wasRelevant = g_relevantActors.erase(event.formId) > 0;
+                g_lastRelevantState.erase(event.formId);
 
                 const auto it = g_knownActors.find(event.formId);
                 if (it != g_knownActors.end()) {
+                    if (wasRelevant) {
+                        logs::info(
+                            "[ACTOR DESPAWN] form={:08X} base={:08X} reason=unload",
+                            it->first,
+                            it->second);
+                    }
+
                     logs::info(
                         "[ACTOR UNLOAD] form={:08X} base={:08X}",
                         it->first,
