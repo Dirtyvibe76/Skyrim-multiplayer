@@ -1,4 +1,5 @@
 #include "RuntimeEntityRegistry.h"
+#include "ReplicationProtocol.h"
 
 #include <algorithm>
 #include <cmath>
@@ -142,6 +143,11 @@ namespace SkyrimMP::Server
             if (!DespawnRuntimeEntity(registry, testId)) throw std::runtime_error("runtime entity transition self-test despawn failed");
             if (registry.entities.size() != registry.staticEntities) throw std::runtime_error("runtime entity self-test leaked dynamic entity");
             std::cout << "[ENTITY-SELFTEST] spawn=true interiorToExterior=true rebucket=true despawn=true\n";
+        }
+
+        RunReplicationProtocolSelfTest(registry);
+        if (registry.entities.size() != registry.staticEntities) {
+            throw std::runtime_error("replication protocol self-test changed runtime registry cardinality");
         }
 
         return registry;
