@@ -1,8 +1,11 @@
 #include "GameplayPayloadImporter.h"
 
+#include <zlib.h>
+
 #include <array>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -56,6 +59,47 @@ namespace SkyrimMP::Server
                 throw std::runtime_error("truncated gameplay subrecord signature");
             }
             return std::string(data.data() + offset, 4);
+        }
+
+        std::vector<char> DecompressBethesdaRecord(
+            const std::vector<char>& stored,
+            const std::string& plugin,
+            const std::string& type)
+        {
+            if (stored.size() < sizeof(std::uint32_t)) {
+                throw std::runtime_error("compressed gameplay record is missing uncompressed-size prefix in " + plugin);
+            }
+
+            const auto expectedSize = ReadU32(stored, 0);
+            if (expectedSize == 0) {
+                return {};
+            }
+            if (expectedSize > static_cast<std::uint32_t>(std::numeric_limits<uLongf>::max())) {
+                throw std::runtime_error("compressed gameplay record is too large for zlib in " + plugin);
+            }
+
+            std::vector<char> output(expectedSize);
+            uLongf outputSize = static_cast<uLongf>(output.size());
+            const auto* compressed = reinterpret_cast<const Bytef*>(stored.data() + sizeof(std::uint32_t));
+            const auto compressedSize = static_cast<uLong>(stored.size() - sizeof(std::uint32_t));
+
+            const int status = ::uncompress(
+                reinterpret_cast<Bytef*>(output.data()),
+                &outputSize,
+                compressed,
+                compressedSize);
+            if (status != Z_OK) {
+                throw std::runtime_error(
+                    "zlib failed to decompress " + type + " gameplay record in " + plugin +
+                    " status=" + std::to_string(status));
+            }
+            if (outputSize != expectedSize) {
+                throw std::runtime_error(
+                    "decompressed gameplay record size mismatch in " + plugin +
+                    ": expected=" + std::to_string(expectedSize) +
+                    " actual=" + std::to_string(outputSize));
+            }
+            return output;
         }
 
         struct ParsedPayload
@@ -130,21 +174,27 @@ namespace SkyrimMP::Server
                 ++summary.candidateRecords;
                 ++summary.typeCounts[record.type];
 
-                if ((record.recordFlags & kCompressedRecordFlag) != 0) {
-                    ++summary.deferredCompressed;
-                    continue;
-                }
-
-                std::vector<char> data(record.dataSize);
-                if (!data.empty()) {
+                std::vector<char> stored(record.dataSize);
+                if (!stored.empty()) {
                     input.seekg(static_cast<std::streamoff>(record.dataOffset), std::ios::beg);
-                    input.read(data.data(), static_cast<std::streamsize>(data.size()));
+                    input.read(stored.data(), static_cast<std::streamsize>(stored.size()));
                     if (!input) {
                         throw std::runtime_error("truncated gameplay record payload in " + a_stack[stackIndex].path.string());
                     }
                 }
 
-                const auto parsed = ParsePayload(data);
+                const bool compressed = (record.recordFlags & kCompressedRecordFlag) != 0;
+                std::vector<char> payload;
+                if (compressed) {
+                    ++summary.compressedRecords;
+                    summary.compressedBytes += stored.size();
+                    payload = DecompressBethesdaRecord(stored, record.sourcePlugin, record.type);
+                    summary.decompressedBytes += payload.size();
+                } else {
+                    payload = std::move(stored);
+                }
+
+                const auto parsed = ParsePayload(payload);
                 ++summary.parsedRecords;
                 summary.subrecords += parsed.subrecordCount;
                 if (!parsed.editorId.empty()) {
@@ -157,10 +207,17 @@ namespace SkyrimMP::Server
                         record.sourcePlugin,
                         parsed.editorId,
                         key,
-                        parsed.subrecordCount
+                        parsed.subrecordCount,
+                        compressed
                     });
                 }
             }
+        }
+
+        if (summary.parsedRecords != summary.candidateRecords) {
+            throw std::runtime_error(
+                "gameplay payload import incomplete: candidates=" + std::to_string(summary.candidateRecords) +
+                " parsed=" + std::to_string(summary.parsedRecords));
         }
 
         return summary;
