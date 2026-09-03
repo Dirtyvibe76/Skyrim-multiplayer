@@ -28,6 +28,13 @@ namespace SkyrimMP::Server
             snapshot.location = entity.location;
             snapshot.sourceRecord = entity.sourceRecord;
             snapshot.hasSourceRecord = entity.hasSourceRecord;
+            snapshot.health = entity.health;
+            snapshot.magicka = entity.magicka;
+            snapshot.stamina = entity.stamina;
+            snapshot.dead = entity.dead;
+            snapshot.inCombat = entity.inCombat;
+            snapshot.hasActorState = entity.hasActorState;
+            snapshot.hasStatusState = entity.hasStatusState;
             return snapshot;
         }
 

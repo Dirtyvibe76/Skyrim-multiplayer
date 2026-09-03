@@ -5,10 +5,8 @@
 #include "ObjectLoadProbe.h"
 #include "RemoteActorAdapter.h"
 #include "ActorState.h"
-#include "RemoteTransform.h"
 
 #include <cmath>
-#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -25,25 +23,9 @@ namespace SkyrimMP
         constexpr float kPi = 3.14159265358979323846f;
         constexpr float kTwoPi = 2.0f * kPi;
 
-        constexpr auto kStreamArmDelay = 5s;
-        constexpr auto kStreamCadence = 100ms;
-        constexpr auto kStreamDuration = 10s;
-        constexpr float kStreamRadius = 120.0f;
-        constexpr float kStreamPitchAmplitude = 0.15f;
-        constexpr float kStreamYawSweep = kTwoPi;
-
         std::unordered_map<std::uint32_t, std::uint32_t> g_knownActors;
         std::unordered_set<std::uint32_t> g_relevantActors;
         std::unordered_map<std::uint32_t, ActorState> g_lastRelevantState;
-
-        bool g_streamComplete = false;
-        bool g_streamActive = false;
-        std::uint32_t g_streamCandidate = 0;
-        std::chrono::steady_clock::time_point g_streamCandidateSince{};
-        std::chrono::steady_clock::time_point g_streamStarted{};
-        std::chrono::steady_clock::time_point g_streamLastQueued{};
-        ActorState g_streamOriginal{};
-        std::uint32_t g_streamSequence = 0;
 
         ActorState ReadActorState(RE::Actor* a_actor, std::uint32_t a_baseFormId)
         {
@@ -95,14 +77,6 @@ namespace SkyrimMP
             return dx * dx + dy * dy + dz * dz <= kExteriorRelevanceRadiusSquared;
         }
 
-        float DistanceSquaredToPlayer(const ActorState& a_actor, const PlayerState& a_player)
-        {
-            const float dx = a_actor.position.x - a_player.position.x;
-            const float dy = a_actor.position.y - a_player.position.y;
-            const float dz = a_actor.position.z - a_player.position.z;
-            return dx * dx + dy * dy + dz * dz;
-        }
-
         bool PositionChanged(const ActorState& a_current, const ActorState& a_previous)
         {
             const float dx = a_current.position.x - a_previous.position.x;
@@ -127,27 +101,6 @@ namespace SkyrimMP
                    WrappedAngleDelta(a_current.rotation.z, a_previous.rotation.z) >= kRotationThreshold;
         }
 
-        float ClampPitch(float a_pitch)
-        {
-            const float limit = kPi * 0.5f;
-            if (a_pitch < -limit) {
-                return -limit;
-            }
-            if (a_pitch > limit) {
-                return limit;
-            }
-            return a_pitch;
-        }
-
-        float NormalizeAngle(float a_angle)
-        {
-            float normalized = std::fmod(a_angle, kTwoPi);
-            if (normalized < 0.0f) {
-                normalized += kTwoPi;
-            }
-            return normalized;
-        }
-
         void LogSpawn(const ActorState& a_state)
         {
             logs::info(
@@ -165,194 +118,6 @@ namespace SkyrimMP
                 a_state.rotation.z);
         }
 
-        void ResetStreamCandidate()
-        {
-            if (!g_streamActive) {
-                g_streamCandidate = 0;
-                g_streamCandidateSince = {};
-            }
-        }
-
-        void ConsiderStreamCandidate(std::uint32_t a_runtimeFormId, float a_distanceSquared)
-        {
-            if (g_streamComplete || g_streamActive || a_runtimeFormId == 0) {
-                return;
-            }
-
-            if (g_streamCandidate != a_runtimeFormId) {
-                g_streamCandidate = a_runtimeFormId;
-                g_streamCandidateSince = std::chrono::steady_clock::now();
-                logs::info(
-                    "[REMOTE STREAM PROBE] nearest candidate form={:08X} distance={:.1f}; waiting 5 seconds before adapter-backed 10 Hz / 10 second stream",
-                    a_runtimeFormId,
-                    std::sqrt(a_distanceSquared));
-            }
-        }
-
-        void ClearStreamState(bool a_complete)
-        {
-            g_streamActive = false;
-            g_streamComplete = a_complete;
-            g_streamCandidate = 0;
-            g_streamCandidateSince = {};
-            g_streamStarted = {};
-            g_streamLastQueued = {};
-            g_streamOriginal = {};
-            g_streamSequence = 0;
-        }
-
-        void AbortActiveStream(const char* a_reason)
-        {
-            if (!g_streamActive) {
-                ResetStreamCandidate();
-                return;
-            }
-
-            logs::warn(
-                "[REMOTE STREAM ABORT] form={:08X} reason={}; re-arming nearest-actor selection",
-                g_streamCandidate,
-                a_reason);
-            ClearStreamState(false);
-        }
-
-        void QueueTransform(const Vec3& a_position, const Vec3& a_rotation)
-        {
-            ++g_streamSequence;
-            RemoteActorAdapter::Enqueue(RemoteTransform{
-                g_streamCandidate,
-                g_streamSequence,
-                a_position,
-                a_rotation
-            });
-        }
-
-        void RunSyntheticRemoteTransformStream()
-        {
-            if (g_streamComplete || g_streamCandidate == 0) {
-                return;
-            }
-
-            const auto now = std::chrono::steady_clock::now();
-
-            if (!g_streamActive) {
-                if (g_streamCandidateSince.time_since_epoch().count() == 0 ||
-                    now - g_streamCandidateSince < kStreamArmDelay) {
-                    return;
-                }
-
-                if (!g_relevantActors.contains(g_streamCandidate)) {
-                    ResetStreamCandidate();
-                    return;
-                }
-
-                const auto knownIt = g_knownActors.find(g_streamCandidate);
-                if (knownIt == g_knownActors.end()) {
-                    ResetStreamCandidate();
-                    return;
-                }
-
-                auto* form = RE::TESForm::LookupByID(g_streamCandidate);
-                auto* actor = form ? form->As<RE::Actor>() : nullptr;
-                if (!actor || !actor->Get3D()) {
-                    ResetStreamCandidate();
-                    return;
-                }
-
-                g_streamOriginal = ReadActorState(actor, knownIt->second);
-                if (g_streamOriginal.runtimeFormId == 0 || g_streamOriginal.cellFormId == 0) {
-                    ResetStreamCandidate();
-                    return;
-                }
-
-                g_streamActive = true;
-                g_streamStarted = now;
-                g_streamLastQueued = {};
-                g_streamSequence = 0;
-
-                logs::info(
-                    "[REMOTE STREAM BEGIN] form={:08X} originPos=({:.2f},{:.2f},{:.2f}) originRot=({:.3f},{:.3f},{:.3f}) path=RemoteActorAdapter cadence=100ms duration=10s radius=120",
-                    g_streamOriginal.runtimeFormId,
-                    g_streamOriginal.position.x,
-                    g_streamOriginal.position.y,
-                    g_streamOriginal.position.z,
-                    g_streamOriginal.rotation.x,
-                    g_streamOriginal.rotation.y,
-                    g_streamOriginal.rotation.z);
-            }
-
-            if (now - g_streamStarted >= kStreamDuration) {
-                auto* form = RE::TESForm::LookupByID(g_streamCandidate);
-                auto* actor = form ? form->As<RE::Actor>() : nullptr;
-                if (!actor || !actor->Get3D()) {
-                    AbortActiveStream("actor unavailable before restore enqueue");
-                    return;
-                }
-
-                QueueTransform(g_streamOriginal.position, g_streamOriginal.rotation);
-                logs::info(
-                    "[REMOTE STREAM RESTORE QUEUED] form={:08X} seq={} pos=({:.2f},{:.2f},{:.2f}) rot=({:.3f},{:.3f},{:.3f})",
-                    g_streamCandidate,
-                    g_streamSequence,
-                    g_streamOriginal.position.x,
-                    g_streamOriginal.position.y,
-                    g_streamOriginal.position.z,
-                    g_streamOriginal.rotation.x,
-                    g_streamOriginal.rotation.y,
-                    g_streamOriginal.rotation.z);
-                logs::info("[REMOTE STREAM COMPLETE] form={:08X} queued={}", g_streamCandidate, g_streamSequence);
-                ClearStreamState(true);
-                return;
-            }
-
-            if (g_streamLastQueued.time_since_epoch().count() != 0 &&
-                now - g_streamLastQueued < kStreamCadence) {
-                return;
-            }
-
-            if (!g_relevantActors.contains(g_streamCandidate)) {
-                AbortActiveStream("actor left relevance set");
-                return;
-            }
-
-            auto* form = RE::TESForm::LookupByID(g_streamCandidate);
-            auto* actor = form ? form->As<RE::Actor>() : nullptr;
-            if (!actor || !actor->Get3D()) {
-                AbortActiveStream("actor unavailable");
-                return;
-            }
-
-            const float elapsedSeconds =
-                std::chrono::duration<float>(now - g_streamStarted).count();
-            const float phase = std::clamp(elapsedSeconds / 10.0f, 0.0f, 1.0f);
-            const float orbit = phase * kTwoPi;
-
-            const Vec3 requestedPosition{
-                g_streamOriginal.position.x + std::cos(orbit) * kStreamRadius,
-                g_streamOriginal.position.y + std::sin(orbit) * kStreamRadius,
-                g_streamOriginal.position.z
-            };
-            const Vec3 requestedRotation{
-                ClampPitch(g_streamOriginal.rotation.x + std::sin(orbit * 2.0f) * kStreamPitchAmplitude),
-                g_streamOriginal.rotation.y,
-                NormalizeAngle(g_streamOriginal.rotation.z + phase * kStreamYawSweep)
-            };
-
-            QueueTransform(requestedPosition, requestedRotation);
-            g_streamLastQueued = now;
-
-            logs::info(
-                "[REMOTE STREAM QUEUED] form={:08X} seq={} phase={:.3f} pos=({:.2f},{:.2f},{:.2f}) rot=({:.3f},{:.3f},{:.3f})",
-                g_streamCandidate,
-                g_streamSequence,
-                phase,
-                requestedPosition.x,
-                requestedPosition.y,
-                requestedPosition.z,
-                requestedRotation.x,
-                requestedRotation.y,
-                requestedRotation.z);
-        }
-
         void SampleRelevantActors()
         {
             const auto playerState = RuntimeProbe::ReadLocalPlayer();
@@ -361,8 +126,6 @@ namespace SkyrimMP
             }
 
             std::unordered_set<std::uint32_t> currentRelevant;
-            std::uint32_t nearestRelevant = 0;
-            float nearestDistanceSquared = (std::numeric_limits<float>::max)();
 
             for (const auto& [runtimeFormId, baseFormId] : g_knownActors) {
                 if (runtimeFormId == playerState.formId) {
@@ -385,14 +148,6 @@ namespace SkyrimMP
                 }
 
                 currentRelevant.insert(runtimeFormId);
-
-                if (actor->Get3D()) {
-                    const float distanceSquared = DistanceSquaredToPlayer(state, playerState);
-                    if (distanceSquared < nearestDistanceSquared) {
-                        nearestDistanceSquared = distanceSquared;
-                        nearestRelevant = runtimeFormId;
-                    }
-                }
 
                 const auto previousIt = g_lastRelevantState.find(runtimeFormId);
                 if (previousIt == g_lastRelevantState.end()) {
@@ -470,13 +225,6 @@ namespace SkyrimMP
                     playerState.worldspaceFormId);
             }
 
-            if (!g_streamComplete && !g_streamActive) {
-                if (nearestRelevant != 0) {
-                    ConsiderStreamCandidate(nearestRelevant, nearestDistanceSquared);
-                } else {
-                    ResetStreamCandidate();
-                }
-            }
         }
     }
 
@@ -493,9 +241,8 @@ namespace SkyrimMP
         g_knownActors.clear();
         g_relevantActors.clear();
         g_lastRelevantState.clear();
-        ClearStreamState(false);
         RemoteActorAdapter::Reset();
-        logs::info("[RE-0.7a] actor caches reset; adapter-backed nearest-actor stream re-armed");
+        logs::info("[CLIENT] actor caches and remote adapter reset");
     }
 
     void MainThreadHook::Update(RE::Actor* a_actor, float a_delta)
@@ -525,14 +272,6 @@ namespace SkyrimMP
             if (!event.loaded) {
                 const bool wasRelevant = g_relevantActors.erase(event.formId) > 0;
                 g_lastRelevantState.erase(event.formId);
-
-                if (event.formId == g_streamCandidate) {
-                    if (g_streamActive) {
-                        AbortActiveStream("actor unloaded");
-                    } else {
-                        ResetStreamCandidate();
-                    }
-                }
 
                 const auto it = g_knownActors.find(event.formId);
                 if (it != g_knownActors.end()) {
@@ -582,7 +321,6 @@ namespace SkyrimMP
             lastActorSample = now;
         }
 
-        RunSyntheticRemoteTransformStream();
         RemoteActorAdapter::ApplyPending(32);
     }
 }

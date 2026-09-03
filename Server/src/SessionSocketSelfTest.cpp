@@ -93,6 +93,27 @@ namespace SkyrimMP::Server
         const auto sessionId = ReadIntegral<std::uint64_t>(welcome.controlPayload, offset);
         if (ReadIntegral<std::uint64_t>(welcome.controlPayload, offset) != nonce) throw std::runtime_error("session socket self-test nonce mismatch");
 
+        SOCKET duplicateClient = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (duplicateClient == INVALID_SOCKET) throw std::runtime_error("session socket self-test duplicate client socket failed");
+        Guard duplicateGuard{ duplicateClient };
+        setsockopt(duplicateClient, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+        sockaddr_in duplicateAddress{};
+        duplicateAddress.sin_family = AF_INET;
+        duplicateAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        duplicateAddress.sin_port = 0;
+        if (bind(duplicateClient, reinterpret_cast<const sockaddr*>(&duplicateAddress), sizeof(duplicateAddress)) == SOCKET_ERROR) throw std::runtime_error("session socket self-test duplicate client bind failed");
+        SendPacket(duplicateClient, server, hello);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        transport.PollOnce();
+        manager.ProcessControlPackets(transport);
+        const auto duplicateReject = ReceiveKind(duplicateClient, WirePacketKind::Control);
+        offset = 0;
+        if (ReadIntegral<std::uint8_t>(duplicateReject.controlPayload, offset) != static_cast<std::uint8_t>(SessionControlKind::Reject) ||
+            ReadIntegral<std::uint8_t>(duplicateReject.controlPayload, offset) != static_cast<std::uint8_t>(SessionRejectReason::CharacterAlreadyOnline) ||
+            manager.SessionCount() != 1) {
+            throw std::runtime_error("session socket self-test duplicate character rejection failed");
+        }
+
         WirePacket interest;
         interest.kind = WirePacketKind::Control;
         interest.channel = WireChannel::Reliable;
@@ -130,6 +151,6 @@ namespace SkyrimMP::Server
         manager.ProcessControlPackets(transport);
         if (manager.SessionCount() != 0 || manager.Stats().disconnects != 1) throw std::runtime_error("session socket self-test disconnect failed");
 
-        std::cout << "[SESSION-SOCKET-SELFTEST] hello=true welcome=true authenticated=true interest=true heartbeat=true disconnect=true sessionId=" << sessionId << '\n';
+        std::cout << "[SESSION-SOCKET-SELFTEST] hello=true welcome=true authenticated=true duplicateCharacterRejected=true interest=true heartbeat=true disconnect=true sessionId=" << sessionId << '\n';
     }
 }

@@ -37,6 +37,13 @@ namespace SkyrimMP::Server
         bool hasSourceRecord{};
         WorldTransform transform;
         RuntimeEntityLocation location;
+        float health{};
+        float magicka{};
+        float stamina{};
+        bool dead{};
+        bool inCombat{};
+        bool hasActorState{};
+        bool hasStatusState{};
         std::uint64_t revision{};
     };
 
@@ -73,4 +80,19 @@ namespace SkyrimMP::Server
         NetworkEntityId a_id,
         const WorldTransform& a_transform,
         const RuntimeEntityLocation& a_location);
+
+    bool UpdateRuntimeActorState(
+        RuntimeEntityRegistry& a_registry,
+        NetworkEntityId a_id,
+        float a_health,
+        float a_magicka,
+        float a_stamina,
+        bool a_dead,
+        bool a_inCombat);
+
+    bool UpdateRuntimeStatusState(
+        RuntimeEntityRegistry& a_registry,
+        NetworkEntityId a_id,
+        bool a_dead,
+        bool a_inCombat);
 }

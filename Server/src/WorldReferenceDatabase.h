@@ -11,6 +11,8 @@
 
 namespace SkyrimMP::Server
 {
+    struct RuntimeEntityRegistry;
+
     struct WorldTransform
     {
         float x{};
@@ -52,5 +54,6 @@ namespace SkyrimMP::Server
 
     WorldReferenceDatabase BuildWorldReferenceDatabase(
         const CanonicalRecordDatabase& a_database,
-        const std::vector<PluginStackEntry>& a_stack);
+        const std::vector<PluginStackEntry>& a_stack,
+        RuntimeEntityRegistry* a_runtimeRegistry = nullptr);
 }

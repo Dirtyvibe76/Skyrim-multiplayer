@@ -72,6 +72,8 @@ namespace SkyrimMP::Server
             if (snapshot.location.exterior) flags |= 0x02;
             if (snapshot.location.hasCell) flags |= 0x04;
             if (snapshot.location.hasWorldspace) flags |= 0x08;
+            if (snapshot.hasActorState) flags |= 0x10;
+            if (snapshot.hasStatusState) flags |= 0x20;
             AppendIntegral(out, flags);
             AppendIntegral(out, static_cast<std::uint16_t>(0));
             AppendIntegral(out, snapshot.revision);
@@ -84,6 +86,15 @@ namespace SkyrimMP::Server
             AppendKey(out, snapshot.location.cell);
             AppendKey(out, snapshot.location.worldspace);
             AppendKey(out, snapshot.sourceRecord);
+            if (snapshot.kind == RuntimeEntityKind::Player) {
+                AppendFloat(out, snapshot.health);
+                AppendFloat(out, snapshot.magicka);
+                AppendFloat(out, snapshot.stamina);
+                std::uint8_t actorFlags = 0;
+                if (snapshot.dead) actorFlags |= 0x01;
+                if (snapshot.inCombat) actorFlags |= 0x02;
+                AppendIntegral(out, actorFlags);
+            }
         }
 
         ReplicatedEntitySnapshot ReadSnapshot(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
@@ -99,6 +110,8 @@ namespace SkyrimMP::Server
             snapshot.location.exterior = (flags & 0x02) != 0;
             snapshot.location.hasCell = (flags & 0x04) != 0;
             snapshot.location.hasWorldspace = (flags & 0x08) != 0;
+            snapshot.hasActorState = (flags & 0x10) != 0;
+            snapshot.hasStatusState = (flags & 0x20) != 0;
             snapshot.revision = ReadIntegral<std::uint64_t>(bytes, offset);
             snapshot.transform.x = ReadFloat(bytes, offset);
             snapshot.transform.y = ReadFloat(bytes, offset);
@@ -109,6 +122,15 @@ namespace SkyrimMP::Server
             snapshot.location.cell = ReadKey(bytes, offset);
             snapshot.location.worldspace = ReadKey(bytes, offset);
             snapshot.sourceRecord = ReadKey(bytes, offset);
+            if (snapshot.kind == RuntimeEntityKind::Player) {
+                snapshot.health = ReadFloat(bytes, offset);
+                snapshot.magicka = ReadFloat(bytes, offset);
+                snapshot.stamina = ReadFloat(bytes, offset);
+                const auto actorFlags = ReadIntegral<std::uint8_t>(bytes, offset);
+                if ((actorFlags & ~0x03u) != 0) throw std::runtime_error("invalid actor-state flags on wire");
+                snapshot.dead = (actorFlags & 0x01) != 0;
+                snapshot.inCombat = (actorFlags & 0x02) != 0;
+            }
             return snapshot;
         }
 
@@ -130,6 +152,12 @@ namespace SkyrimMP::Server
                 message.snapshot.location.cell = CanonicalRecordKey{ FormNamespaceKind::Full, 0, 0x12345 };
                 message.snapshot.location.worldspace = CanonicalRecordKey{ FormNamespaceKind::Full, 0, 0x3C };
                 message.snapshot.hasSourceRecord = false;
+                message.snapshot.hasActorState = true;
+                message.snapshot.hasStatusState = true;
+                message.snapshot.health = 87.5f;
+                message.snapshot.magicka = 42.0f;
+                message.snapshot.stamina = 63.25f;
+                message.snapshot.inCombat = true;
             }
             return message;
         }
@@ -243,7 +271,13 @@ namespace SkyrimMP::Server
         const auto reliableRoundTrip = DeserializeWirePacket(reliableBytes);
         if (reliableRoundTrip.sequence != reliable.sequence || reliableRoundTrip.messages.size() != 2 ||
             reliableRoundTrip.messages[0].kind != ReplicationMessageKind::Spawn ||
-            reliableRoundTrip.messages[1].kind != ReplicationMessageKind::Despawn) {
+            reliableRoundTrip.messages[1].kind != ReplicationMessageKind::Despawn ||
+            !reliableRoundTrip.messages[0].snapshot.hasActorState ||
+            !reliableRoundTrip.messages[0].snapshot.hasStatusState ||
+            reliableRoundTrip.messages[0].snapshot.health != 87.5f ||
+            reliableRoundTrip.messages[0].snapshot.magicka != 42.0f ||
+            reliableRoundTrip.messages[0].snapshot.stamina != 63.25f ||
+            !reliableRoundTrip.messages[0].snapshot.inCombat) {
             throw std::runtime_error("wire serialization reliable round-trip self-test failed");
         }
 

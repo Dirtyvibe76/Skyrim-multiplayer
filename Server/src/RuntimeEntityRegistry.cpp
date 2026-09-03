@@ -1,4 +1,6 @@
 #include "RuntimeEntityRegistry.h"
+
+#include <cmath>
 #include "ReplicationProtocol.h"
 
 #include <algorithm>
@@ -195,6 +197,60 @@ namespace SkyrimMP::Server
         if (rebucket) {
             AddToBucket(registry, entity);
             ++registry.rebuckets;
+        }
+        return true;
+    }
+
+    bool UpdateRuntimeActorState(
+        RuntimeEntityRegistry& registry,
+        NetworkEntityId id,
+        float health,
+        float magicka,
+        float stamina,
+        bool dead,
+        bool inCombat)
+    {
+        const auto it = registry.entities.find(id);
+        if (it == registry.entities.end()) return false;
+        auto& entity = it->second;
+        if (entity.kind != RuntimeEntityKind::Actor && entity.kind != RuntimeEntityKind::Player) return false;
+        if (!std::isfinite(health) || !std::isfinite(magicka) || !std::isfinite(stamina) ||
+            health < 0.0f || magicka < 0.0f || stamina < 0.0f ||
+            health > 1000000.0f || magicka > 1000000.0f || stamina > 1000000.0f) return false;
+
+        const bool changed = !entity.hasActorState || entity.health != health || entity.magicka != magicka ||
+            entity.stamina != stamina || entity.dead != dead || entity.inCombat != inCombat;
+        entity.health = health;
+        entity.magicka = magicka;
+        entity.stamina = stamina;
+        entity.dead = dead;
+        entity.inCombat = inCombat;
+        entity.hasActorState = true;
+        entity.hasStatusState = true;
+        if (changed) {
+            ++entity.revision;
+            ++registry.updates;
+        }
+        return true;
+    }
+
+    bool UpdateRuntimeStatusState(
+        RuntimeEntityRegistry& registry,
+        NetworkEntityId id,
+        bool dead,
+        bool inCombat)
+    {
+        const auto it = registry.entities.find(id);
+        if (it == registry.entities.end()) return false;
+        auto& entity = it->second;
+        if (entity.kind != RuntimeEntityKind::Actor && entity.kind != RuntimeEntityKind::Player) return false;
+        const bool changed = !entity.hasStatusState || entity.dead != dead || entity.inCombat != inCombat;
+        entity.dead = dead;
+        entity.inCombat = inCombat;
+        entity.hasStatusState = true;
+        if (changed) {
+            ++entity.revision;
+            ++registry.updates;
         }
         return true;
     }

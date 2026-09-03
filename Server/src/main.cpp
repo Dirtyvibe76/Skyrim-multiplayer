@@ -4,6 +4,8 @@
 #include "FormIdResolver.h"
 #include "GameplayPayloadImporter.h"
 #include "PluginStack.h"
+#include "DedicatedServerLoop.h"
+#include "RuntimeEntityRegistry.h"
 
 #include <windows.h>
 #include <bcrypt.h>
@@ -30,6 +32,7 @@ namespace
         std::string name = "SkyrimMP Server";
         std::uint16_t port = 10578;
         std::uint32_t maxPlayers = 64;
+        std::uint32_t tickHz = 20;
         fs::path gameDataPath;
         fs::path modsPath = "Mods";
         fs::path manifestPath = "modmanifest.json";
@@ -122,6 +125,8 @@ namespace
                     config.port = static_cast<std::uint16_t>(parsed);
                 } else if (section == "server" && key == "maxplayers") {
                     config.maxPlayers = std::stoul(value);
+                } else if (section == "network" && key == "tickhz") {
+                    config.tickHz = std::stoul(value);
                 } else if (section == "game" && key == "datapath") {
                     config.gameDataPath = value;
                 } else if (section == "mods" && key == "path") {
@@ -132,6 +137,9 @@ namespace
             } catch (...) {
                 throw std::runtime_error("invalid server.ini value for [" + section + "] " + key + "=" + value);
             }
+        }
+        if (config.maxPlayers == 0 || config.tickHz == 0 || config.tickHz > 120) {
+            throw std::runtime_error("invalid server configuration");
         }
         return config;
     }
@@ -319,7 +327,7 @@ int main(int argc, char** argv)
 
         std::cout << "SkyrimMP Dedicated Server bootstrap\n";
         std::cout << "[SERVER] name=\"" << config.name << "\" port=" << config.port
-                  << " maxPlayers=" << config.maxPlayers << '\n';
+                  << " maxPlayers=" << config.maxPlayers << " tickHz=" << config.tickHz << '\n';
         std::cout << "[MODS] scanning " << fs::absolute(config.modsPath).string() << '\n';
 
         const auto files = BuildManifest(config.modsPath);
@@ -399,7 +407,9 @@ int main(int argc, char** argv)
                   << " typeMismatchOverrides=" << recordDatabase.typeMismatchOverrides << '\n';
 
         std::cout << "[PAYLOAD] importing authoritative gameplay record payloads\n";
-        const auto payloadSummary = SkyrimMP::Server::ImportGameplayPayloads(recordDatabase, pluginStack);
+        SkyrimMP::Server::RuntimeEntityRegistry runtimeRegistry;
+        const auto payloadSummary = SkyrimMP::Server::ImportGameplayPayloads(
+            recordDatabase, pluginStack, 12, &runtimeRegistry);
         std::cout << "[PAYLOAD] candidates=" << payloadSummary.candidateRecords
                   << " parsed=" << payloadSummary.parsedRecords
                   << " compressed=" << payloadSummary.compressedRecords
@@ -428,6 +438,12 @@ int main(int argc, char** argv)
 
         std::cout << "[MODS] manifest=" << fs::absolute(config.manifestPath).string() << '\n';
         std::cout << "[PASS] server canonical database + complete gameplay payload import complete\n";
+        SkyrimMP::Server::RunDedicatedServerLoop(
+            runtimeRegistry,
+            loadOrderInfo.revisionHash,
+            config.port,
+            config.maxPlayers,
+            config.tickHz);
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "[FATAL] " << ex.what() << '\n';

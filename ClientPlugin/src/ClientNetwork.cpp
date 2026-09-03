@@ -24,7 +24,7 @@ namespace SkyrimMP
 
         constexpr std::uint32_t kWireMagic = 0x31504D53u;
         constexpr std::uint16_t kWireProtocolVersion = 2;
-        constexpr std::uint16_t kReplicationProtocolVersion = 3;
+        constexpr std::uint16_t kReplicationProtocolVersion = 6;
         constexpr std::uint16_t kServerPort = 10578;
         constexpr auto kLoadOrderRevision = "7dc35a831945468b790a6b3398236c0fe9fe7c8b32425be9ef07ca1434d6c808";
         constexpr std::size_t kMaxDatagram = 1200;
@@ -63,6 +63,13 @@ namespace SkyrimMP
             bool exterior{};
             bool hasCell{};
             bool hasWorld{};
+            float health{};
+            float magicka{};
+            float stamina{};
+            bool dead{};
+            bool inCombat{};
+            bool hasActorState{};
+            bool hasStatusState{};
         };
 
         std::atomic_bool g_running{ false };
@@ -176,15 +183,10 @@ namespace SkyrimMP
             return out;
         }
 
-        std::vector<std::uint8_t> EncodeBootstrapRequest(std::uint64_t sessionId)
-        {
-            std::vector<std::uint8_t> out;
-            Append(out, static_cast<std::uint8_t>(ControlKind::BootstrapRequest));
-            Append(out, sessionId);
-            return out;
-        }
-
-        std::optional<std::vector<std::uint8_t>> EncodeInterest(std::uint64_t sessionId, const PlayerState& player)
+        std::optional<std::vector<std::uint8_t>> EncodePlayerState(
+            ControlKind kind,
+            std::uint64_t sessionId,
+            const PlayerState& player)
         {
             CanonicalKey cell{};
             if (!RuntimeFormToCanonical(player.cellFormId, cell)) return std::nullopt;
@@ -194,7 +196,7 @@ namespace SkyrimMP
             if (exterior && !RuntimeFormToCanonical(player.worldspaceFormId, world)) return std::nullopt;
 
             std::vector<std::uint8_t> out;
-            Append(out, static_cast<std::uint8_t>(ControlKind::Interest));
+            Append(out, static_cast<std::uint8_t>(kind));
             Append(out, sessionId);
             std::uint8_t flags = 0x02;
             if (exterior) flags |= 0x01 | 0x04;
@@ -207,8 +209,27 @@ namespace SkyrimMP
             AppendFloat(out, player.rotation.x);
             AppendFloat(out, player.rotation.y);
             AppendFloat(out, player.rotation.z);
+            AppendFloat(out, player.health);
+            AppendFloat(out, player.magicka);
+            AppendFloat(out, player.stamina);
+            std::uint8_t actorFlags = 0;
+            if (player.dead) actorFlags |= 0x01;
+            if (player.inCombat) actorFlags |= 0x02;
+            if (player.hasActorState) actorFlags |= 0x04;
+            if (player.hasStatusState) actorFlags |= 0x08;
+            Append(out, actorFlags);
             Append(out, static_cast<std::int32_t>(1));
             return out;
+        }
+
+        std::optional<std::vector<std::uint8_t>> EncodeBootstrapRequest(std::uint64_t sessionId, const PlayerState& player)
+        {
+            return EncodePlayerState(ControlKind::BootstrapRequest, sessionId, player);
+        }
+
+        std::optional<std::vector<std::uint8_t>> EncodeInterest(std::uint64_t sessionId, const PlayerState& player)
+        {
+            return EncodePlayerState(ControlKind::Interest, sessionId, player);
         }
 
         void SendDatagram(SOCKET socketValue, const sockaddr_in& server, const std::vector<std::uint8_t>& bytes)
@@ -243,7 +264,14 @@ namespace SkyrimMP
                 replica.position,
                 replica.rotation,
                 cellFormId,
-                worldspaceFormId
+                worldspaceFormId,
+                replica.health,
+                replica.magicka,
+                replica.stamina,
+                replica.dead,
+                replica.inCombat,
+                replica.hasActorState,
+                replica.hasStatusState
             });
         }
 
@@ -295,9 +323,20 @@ namespace SkyrimMP
                 replica.cell = ReadKey(bytes, offset);
                 replica.world = ReadKey(bytes, offset);
                 (void)ReadKey(bytes, offset);
+                if (entityKind == kRuntimeEntityKindPlayer) {
+                    replica.health = ReadFloat(bytes, offset);
+                    replica.magicka = ReadFloat(bytes, offset);
+                    replica.stamina = ReadFloat(bytes, offset);
+                    const auto actorFlags = Read<std::uint8_t>(bytes, offset);
+                    if ((actorFlags & ~0x03u) != 0) throw std::runtime_error("invalid replicated actor flags");
+                    replica.dead = (actorFlags & 0x01) != 0;
+                    replica.inCombat = (actorFlags & 0x02) != 0;
+                }
                 replica.exterior = (flags & 0x02) != 0;
                 replica.hasCell = (flags & 0x04) != 0;
                 replica.hasWorld = (flags & 0x08) != 0;
+                replica.hasActorState = (flags & 0x10) != 0;
+                replica.hasStatusState = (flags & 0x20) != 0;
 
                 if (entityKind == kRuntimeEntityKindPlayer) {
                     if (kind == ReplicationKind::Spawn) {
@@ -345,7 +384,7 @@ namespace SkyrimMP
             const auto anchorFormId = CanonicalToRuntimeForm(anchor);
             const auto cellFormId = CanonicalToRuntimeForm(cell);
             const auto worldFormId = hasWorld ? CanonicalToRuntimeForm(world) : 0;
-            if (anchorFormId == 0 || cellFormId == 0 || (hasWorld && worldFormId == 0)) {
+            if (cellFormId == 0 || (hasWorld && worldFormId == 0)) {
                 throw std::runtime_error("world bootstrap canonical forms are not runtime-resolvable");
             }
 
@@ -391,13 +430,23 @@ namespace SkyrimMP
             u_long nonBlocking = 1;
             ioctlsocket(socketValue, FIONBIO, &nonBlocking);
 
+            sockaddr_in local{};
+            local.sin_family = AF_INET;
+            local.sin_port = 0;
+            local.sin_addr.s_addr = htonl(INADDR_ANY);
+            if (bind(socketValue, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) == SOCKET_ERROR) {
+                logs::error("[NET-CLIENT] UDP ephemeral bind failed error={}", WSAGetLastError());
+                closesocket(socketValue);
+                WSACleanup();
+                return;
+            }
+
             sockaddr_in server{};
             server.sin_family = AF_INET;
             server.sin_port = htons(kServerPort);
             server.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-            const std::uint64_t nonce = (static_cast<std::uint64_t>(GetCurrentProcessId()) << 32) ^
-                static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+            std::uint64_t nonce = 0;
             std::uint64_t sessionId = 0;
             bool bootstrapReceived = false;
             std::uint32_t nextSequence = 1;
@@ -405,6 +454,7 @@ namespace SkyrimMP
             auto lastHeartbeat = std::chrono::steady_clock::time_point{};
             auto lastBootstrapRequest = std::chrono::steady_clock::time_point{};
             auto lastInterest = std::chrono::steady_clock::time_point{};
+            auto lastServerPacket = std::chrono::steady_clock::time_point{};
             std::uint64_t dataPackets = 0;
             std::uint64_t replicationMessages = 0;
             std::uint64_t spawns = 0;
@@ -413,11 +463,40 @@ namespace SkyrimMP
             std::unordered_map<std::uint64_t, ClientReplica> replicas;
             std::unordered_set<std::uint64_t> playerTombstones;
 
-            logs::info("[NET-CLIENT] worker started server=127.0.0.1:{} protocol={} revision={} worldBootstrap=server remotePlayerProxy=controlled-one tombstones=true", kServerPort, kReplicationProtocolVersion, kLoadOrderRevision);
+            auto resetSession = [&](const char* reason) {
+                for (const auto& [id, replica] : replicas) {
+                    if (replica.entityKind == kRuntimeEntityKindPlayer) {
+                        RemotePlayerProxyManager::EnqueueDespawn(id);
+                    }
+                }
+                replicas.clear();
+                playerTombstones.clear();
+                sessionId = 0;
+                bootstrapReceived = false;
+                lastHello = {};
+                lastHeartbeat = {};
+                lastBootstrapRequest = {};
+                lastInterest = {};
+                lastServerPacket = {};
+                g_authenticated.store(false, std::memory_order_release);
+                WorldBootstrapManager::Reset();
+                logs::warn("[NET-CLIENT] session reset reason={}; reconnecting", reason);
+            };
+
+            logs::info("[NET-CLIENT] worker started server=127.0.0.1:{} protocol={} revision={} waitingForLoadedCharacter=true worldBootstrap=server remotePlayerProxies=63 tombstones=true", kServerPort, kReplicationProtocolVersion, kLoadOrderRevision);
 
             while (!stop.stop_requested() && g_running.load(std::memory_order_relaxed)) {
                 const auto now = std::chrono::steady_clock::now();
-                if (sessionId == 0 && (lastHello.time_since_epoch().count() == 0 || now - lastHello >= 1s)) {
+                if (nonce == 0) {
+                    std::scoped_lock lock(g_playerMutex);
+                    if (g_hasPlayer) nonce = g_player.characterId;
+                }
+                if (sessionId != 0 && lastServerPacket.time_since_epoch().count() != 0 &&
+                    now - lastServerPacket >= 10s) {
+                    resetSession("server timeout");
+                }
+
+                if (nonce != 0 && sessionId == 0 && (lastHello.time_since_epoch().count() == 0 || now - lastHello >= 1s)) {
                     SendDatagram(socketValue, server, MakePacket(PacketKind::Control, Channel::Reliable, nextSequence++, 0, EncodeHello(nonce)));
                     lastHello = now;
                 }
@@ -430,7 +509,18 @@ namespace SkyrimMP
 
                     if (!bootstrapReceived) {
                         if (lastBootstrapRequest.time_since_epoch().count() == 0 || now - lastBootstrapRequest >= 1s) {
-                            SendDatagram(socketValue, server, MakePacket(PacketKind::Control, Channel::Reliable, nextSequence++, 0, EncodeBootstrapRequest(sessionId)));
+                            PlayerState player{};
+                            bool hasPlayer = false;
+                            {
+                                std::scoped_lock lock(g_playerMutex);
+                                player = g_player;
+                                hasPlayer = g_hasPlayer;
+                            }
+                            if (hasPlayer) {
+                                if (auto payload = EncodeBootstrapRequest(sessionId, player)) {
+                                    SendDatagram(socketValue, server, MakePacket(PacketKind::Control, Channel::Reliable, nextSequence++, 0, *payload));
+                                }
+                            }
                             lastBootstrapRequest = now;
                         }
                     } else if (WorldBootstrapManager::HasApplied() &&
@@ -464,6 +554,7 @@ namespace SkyrimMP
                     }
                     if (count <= 0) break;
                     bytes.resize(static_cast<std::size_t>(count));
+                    lastServerPacket = std::chrono::steady_clock::now();
 
                     try {
                         std::size_t offset = 0;
@@ -500,7 +591,18 @@ namespace SkyrimMP
                                 if (offset != bytes.size()) throw std::runtime_error("world bootstrap trailing bytes");
                             } else if (controlKind == ControlKind::Reject) {
                                 const auto reason = Read<std::uint8_t>(bytes, offset);
-                                logs::error("[NET-CLIENT] server rejected connection reason={}", reason);
+                                const char* description = "unknown";
+                                switch (reason) {
+                                case 1: description = "protocol mismatch"; break;
+                                case 2: description = "load order mismatch"; break;
+                                case 3: description = "server full"; break;
+                                case 4: description = "invalid or stale session"; break;
+                                case 5: description = "malformed request"; break;
+                                case 6: description = "this multiplayer character is already online"; break;
+                                default: break;
+                                }
+                                logs::error("[NET-CLIENT] server rejected connection reason={} ({})", reason, description);
+                                if (reason == 4) resetSession("server rejected stale session");
                             }
                         } else if (kind == PacketKind::Data) {
                             if (controlSize != 0) throw std::runtime_error("data packet has control payload");

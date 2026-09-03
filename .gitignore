@@ -1,5 +1,9 @@
 build/
+release/
 .xmake/
+ClientLauncher/bin/
+ClientLauncher/obj/
+server-data/
 *.pdb
 *.ilk
 *.exp

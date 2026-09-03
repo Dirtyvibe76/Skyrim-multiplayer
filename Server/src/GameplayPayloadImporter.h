@@ -10,6 +10,8 @@
 
 namespace SkyrimMP::Server
 {
+    struct RuntimeEntityRegistry;
+
     struct GameplayPayloadSample
     {
         std::string type;
@@ -36,5 +38,6 @@ namespace SkyrimMP::Server
     GameplayPayloadSummary ImportGameplayPayloads(
         const CanonicalRecordDatabase& a_database,
         const std::vector<PluginStackEntry>& a_stack,
-        std::size_t a_sampleLimit = 12);
+        std::size_t a_sampleLimit = 12,
+        RuntimeEntityRegistry* a_runtimeRegistry = nullptr);
 }

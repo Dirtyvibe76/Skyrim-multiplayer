@@ -12,7 +12,9 @@ namespace SkyrimMP
 {
     namespace
     {
-        constexpr std::size_t kMaxNativeProxies = 1;
+        // One client never renders its own authoritative player entity, so this
+        // supports every remote participant on the server's default 64-player cap.
+        constexpr std::size_t kMaxNativeProxies = 63;
         constexpr std::uint32_t kProxySequenceBase = 0x40000000u;
 
         enum class ProxyCommandKind : std::uint8_t
@@ -79,6 +81,19 @@ namespace SkyrimMP
             return reference ? reference->As<RE::Actor>() : nullptr;
         }
 
+        void ApplyActorState(RE::Actor& actor, const RemotePlayerProxyUpdate& update)
+        {
+            if (update.hasActorState) {
+                actor.SetActorValue(RE::ActorValue::kHealth, update.health);
+                actor.SetActorValue(RE::ActorValue::kMagicka, update.magicka);
+                actor.SetActorValue(RE::ActorValue::kStamina, update.stamina);
+            }
+            if (update.hasStatusState) {
+                if (update.dead && !actor.IsDead()) actor.KillImpl(nullptr, 0.0f, false, false);
+                if (!update.dead && actor.IsDead()) actor.Resurrect(false, true);
+            }
+        }
+
         void DestroyProxy(std::uint64_t networkEntityId, NativeProxy& proxy, const char* reason)
         {
             if (auto* actor = ResolveActor(proxy)) {
@@ -136,12 +151,14 @@ namespace SkyrimMP
             g_proxies.emplace(networkEntityId, proxy);
 
             logs::info(
-                "[REMOTE PLAYER PROXY SPAWN] networkId={:016X} form={:08X} cell={:08X} world={:08X} revision={} mode=single-controlled",
+                "[REMOTE PLAYER PROXY SPAWN] networkId={:016X} form={:08X} cell={:08X} world={:08X} revision={} active={}/{}",
                 networkEntityId,
                 actor->GetFormID(),
                 update.cellFormId,
                 update.worldspaceFormId,
-                update.revision);
+                update.revision,
+                g_proxies.size(),
+                kMaxNativeProxies);
 
             RemoteActorAdapter::Enqueue(RemoteTransform{
                 actor->GetFormID(),
@@ -149,6 +166,7 @@ namespace SkyrimMP
                 update.position,
                 update.rotation
             });
+            ApplyActorState(*actor, update);
             return true;
         }
 
@@ -189,6 +207,7 @@ namespace SkyrimMP
             }
 
             proxy.lastRevision = update.revision;
+            ApplyActorState(*actor, update);
             RemoteActorAdapter::Enqueue(RemoteTransform{
                 actor->GetFormID(),
                 AdapterSequence(update.revision),

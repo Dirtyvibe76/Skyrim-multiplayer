@@ -15,6 +15,13 @@ namespace SkyrimMP
         Vec3 rotation{};
         std::uint32_t cellFormId{};
         std::uint32_t worldspaceFormId{};
+        float health{};
+        float magicka{};
+        float stamina{};
+        bool dead{};
+        bool inCombat{};
+        bool hasActorState{};
+        bool hasStatusState{};
     };
 
     class RemotePlayerProxyManager

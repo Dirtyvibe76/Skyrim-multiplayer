@@ -31,6 +31,7 @@ internal sealed class LauncherForm : Form
     private readonly string _configPath;
     private readonly CancellationTokenSource _shutdown = new();
     private Task? _relayTask;
+    private bool _launching;
 
     public LauncherForm()
     {
@@ -51,7 +52,7 @@ internal sealed class LauncherForm : Form
         var single = new Button { Text = "Play Single Player", AutoSize = true, Height = 42 };
         single.Click += async (_, _) => await LaunchAsync(multiplayer: false);
 
-        var multi = new Button { Text = "Play Multiplayer", AutoSize = true, Height = 42 };
+        var multi = new Button { Text = "Join Multiplayer Server", AutoSize = true, Height = 42 };
         multi.Click += async (_, _) => await LaunchAsync(multiplayer: true);
 
         var grid = new TableLayoutPanel
@@ -168,6 +169,8 @@ internal sealed class LauncherForm : Form
 
     private async Task LaunchAsync(bool multiplayer)
     {
+        if (_launching) return;
+        _launching = true;
         try
         {
             if (!IsValidSkyrimFolder(_skyrimPath.Text, out _))
@@ -190,17 +193,16 @@ internal sealed class LauncherForm : Form
                 if (!File.Exists(enabled) && File.Exists(disabled)) File.Move(disabled, enabled, true);
                 if (!File.Exists(enabled)) throw new InvalidOperationException("SkyrimMultiplayer.dll is not installed.");
 
-                if (!IPAddress.TryParse(config.ServerAddress, out var ip) || ip.AddressFamily != AddressFamily.InterNetwork)
-                    throw new InvalidOperationException("Enter a valid IPv4 address for the SkyrimMP server.");
+                var ip = await ResolveServerAddressAsync(config.ServerAddress, _shutdown.Token);
 
                 _shutdown.CancelAfter(Timeout.InfiniteTimeSpan);
                 _relayTask = RunRelayAsync(ip, config.ServerPort, _shutdown.Token);
-                _status.Text = $"Multiplayer relay active: 127.0.0.1:10578 -> {ip}:{config.ServerPort}";
+                _status.Text = $"Multiplayer relay active: 127.0.0.1:10578 -> {ip}:{config.ServerPort}. Load SkyrimMP_* (or a post-Helgen save for first import).";
             }
             else
             {
                 if (File.Exists(enabled)) File.Move(enabled, disabled, true);
-                _status.Text = "Multiplayer plugin disabled for this launch.";
+                _status.Text = "Single-player mode: multiplayer plugin disabled for this launch.";
             }
 
             var skse = Path.Combine(config.SkyrimPath, "skse64_loader.exe");
@@ -213,12 +215,39 @@ internal sealed class LauncherForm : Form
 
             _status.Text += " Skyrim started.";
             await Task.Run(() => process.WaitForExit());
-            _status.Text = multiplayer ? "Skyrim closed. Close this launcher when finished." : "Skyrim closed.";
+            _status.Text = multiplayer ? "Multiplayer client closed. Close this launcher when finished." : "Single-player Skyrim closed.";
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, ex.Message, "SkyrimMP Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error);
             _status.Text = "Launch failed.";
+        }
+        finally
+        {
+            _launching = false;
+        }
+    }
+
+    private static async Task<IPAddress> ResolveServerAddressAsync(string address, CancellationToken token)
+    {
+        if (string.IsNullOrWhiteSpace(address))
+            throw new InvalidOperationException("Enter the IPv4 address or hostname of the SkyrimMP server.");
+
+        if (IPAddress.TryParse(address, out var parsed))
+        {
+            if (parsed.AddressFamily == AddressFamily.InterNetwork) return parsed;
+            throw new InvalidOperationException("The SkyrimMP client currently requires an IPv4 server address.");
+        }
+
+        try
+        {
+            var addresses = await Dns.GetHostAddressesAsync(address, AddressFamily.InterNetwork, token);
+            var resolved = addresses.FirstOrDefault(candidate => candidate.AddressFamily == AddressFamily.InterNetwork);
+            return resolved ?? throw new InvalidOperationException($"Hostname '{address}' has no IPv4 address.");
+        }
+        catch (SocketException ex)
+        {
+            throw new InvalidOperationException($"Could not resolve SkyrimMP server hostname '{address}'.", ex);
         }
     }
 

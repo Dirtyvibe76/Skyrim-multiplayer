@@ -158,7 +158,8 @@ namespace SkyrimMP::Server
     GameplayPayloadSummary ImportGameplayPayloads(
         const CanonicalRecordDatabase& a_database,
         const std::vector<PluginStackEntry>& a_stack,
-        std::size_t a_sampleLimit)
+        std::size_t a_sampleLimit,
+        RuntimeEntityRegistry* a_runtimeRegistry)
     {
         GameplayPayloadSummary summary;
 
@@ -228,7 +229,7 @@ namespace SkyrimMP::Server
 
         // Materialize authoritative placed-world references. REFR/ACHR NAME targets are
         // canonicalized against the winning-record database and ACHR bases must resolve to NPC_.
-        const auto world = BuildWorldReferenceDatabase(a_database, a_stack);
+        const auto world = BuildWorldReferenceDatabase(a_database, a_stack, a_runtimeRegistry);
         (void)world;
 
         return summary;

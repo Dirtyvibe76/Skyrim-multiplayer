@@ -69,3 +69,23 @@ jobs:
           path: artifact/SkyrimMultiplayer-Client
           if-no-files-found: error
           retention-days: 30
+
+      - name: Stage dedicated server package
+        shell: powershell
+        run: |
+          $stage = Join-Path $PWD 'artifact\SkyrimMultiplayer-Server'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item 'build\windows\x64\releasedbg\SkyrimMPServer.exe' $stage
+          Copy-Item 'Server\server.ini.example' $stage
+          Copy-Item 'README.md' $stage
+          Get-FileHash (Join-Path $stage 'SkyrimMPServer.exe') -Algorithm SHA256 |
+            ForEach-Object { "SkyrimMPServer.exe SHA256=$($_.Hash)" } |
+            Set-Content (Join-Path $stage 'SHA256.txt')
+
+      - name: Upload downloadable server package
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyrimMultiplayer-Server
+          path: artifact/SkyrimMultiplayer-Server
+          if-no-files-found: error
+          retention-days: 30

@@ -6,7 +6,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -27,70 +26,36 @@ namespace SkyrimMP::Server
             return FALSE;
         }
 
-        struct LiveConfig
-        {
-            std::uint16_t port{ 10578 };
-            std::uint32_t maxPlayers{ 64 };
-            std::uint32_t tickHz{ 20 };
-        };
-
-        LiveConfig LoadLiveConfig()
-        {
-            LiveConfig config;
-            std::ifstream input("server.ini");
-            if (!input) return config;
-
-            std::string section;
-            std::string line;
-            while (std::getline(input, line)) {
-                while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
-                const auto first = line.find_first_not_of(" \t");
-                if (first == std::string::npos || line[first] == ';' || line[first] == '#') continue;
-                line.erase(0, first);
-                if (line.front() == '[' && line.back() == ']') {
-                    section = line.substr(1, line.size() - 2);
-                    continue;
-                }
-                const auto eq = line.find('=');
-                if (eq == std::string::npos) continue;
-                const auto key = line.substr(0, eq);
-                const auto value = line.substr(eq + 1);
-                try {
-                    if (section == "Server" && key == "Port") config.port = static_cast<std::uint16_t>(std::stoul(value));
-                    else if (section == "Server" && key == "MaxPlayers") config.maxPlayers = static_cast<std::uint32_t>(std::stoul(value));
-                    else if (section == "Network" && key == "TickHz") config.tickHz = static_cast<std::uint32_t>(std::stoul(value));
-                } catch (...) {
-                    throw std::runtime_error("invalid live server.ini network value");
-                }
-            }
-            if (config.port == 0 || config.maxPlayers == 0 || config.tickHz == 0 || config.tickHz > 120) {
-                throw std::runtime_error("invalid live server configuration");
-            }
-            return config;
-        }
     }
 
-    void RunDedicatedServerLoop(RuntimeEntityRegistry& registry, const std::string& loadOrderRevision)
+    void RunDedicatedServerLoop(
+        RuntimeEntityRegistry& registry,
+        const std::string& loadOrderRevision,
+        std::uint16_t port,
+        std::uint32_t maxPlayers,
+        std::uint32_t tickHz)
     {
         if (loadOrderRevision.empty()) throw std::runtime_error("live server loop requires load-order revision");
+        if (port == 0 || maxPlayers == 0 || tickHz == 0 || tickHz > 120) {
+            throw std::runtime_error("invalid live server configuration");
+        }
 
-        const auto config = LoadLiveConfig();
         NetworkTransport transport;
-        transport.Bind(config.port);
-        ServerSessionManager sessions(loadOrderRevision, config.maxPlayers);
+        transport.Bind(port);
+        ServerSessionManager sessions(loadOrderRevision, maxPlayers, "server-data/first-logins.txt");
 
         g_stopRequested.store(false, std::memory_order_relaxed);
         SetConsoleCtrlHandler(ConsoleHandler, TRUE);
 
-        const auto tickInterval = std::chrono::microseconds(1000000 / config.tickHz);
+        const auto tickInterval = std::chrono::microseconds(1000000 / tickHz);
         auto nextTick = std::chrono::steady_clock::now();
         auto nextStatus = nextTick + std::chrono::seconds(5);
         std::uint64_t ticks{};
         std::uint64_t replicationPasses{};
 
         std::cout << "[LIVE] listening=0.0.0.0:" << transport.BoundPort()
-                  << " tickHz=" << config.tickHz
-                  << " maxPlayers=" << config.maxPlayers
+                  << " tickHz=" << tickHz
+                  << " maxPlayers=" << maxPlayers
                   << " protocol=" << kWireProtocolVersion
                   << " loadOrder=" << loadOrderRevision << '\n';
         std::cout << "[LIVE] authority=server-player-entity interest=derived-from-authoritative-player\n";
@@ -117,6 +82,9 @@ namespace SkyrimMP::Server
                           << " sessions=" << sessions.SessionCount()
                           << " players=" << sessions.ActivePlayerCount()
                           << " playerSpawned=" << s.playerEntitiesSpawned
+                          << " riverwoodFirstLogins=" << s.riverwoodFirstLogins
+                          << " playerRestores=" << s.playerStateRestores
+                          << " playerSaves=" << s.playerStateSaves
                           << " playerRequests=" << s.playerStateRequests
                           << " playerApplied=" << s.playerStateApplied
                           << " playerRejected=" << s.playerStateRejected
@@ -139,10 +107,14 @@ namespace SkyrimMP::Server
         }
 
         SetConsoleCtrlHandler(ConsoleHandler, FALSE);
+        sessions.FlushAuthoritativePlayers(registry);
         std::cout << "[LIVE-STOP] ticks=" << ticks
                   << " sessions=" << sessions.SessionCount()
                   << " players=" << sessions.ActivePlayerCount()
                   << " playerSpawned=" << sessions.Stats().playerEntitiesSpawned
+                  << " riverwoodFirstLogins=" << sessions.Stats().riverwoodFirstLogins
+                  << " playerRestores=" << sessions.Stats().playerStateRestores
+                  << " playerSaves=" << sessions.Stats().playerStateSaves
                   << " playerApplied=" << sessions.Stats().playerStateApplied
                   << " playerRejected=" << sessions.Stats().playerStateRejected
                   << " playerDespawned=" << sessions.Stats().playerEntitiesDespawned

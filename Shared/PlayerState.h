@@ -13,11 +13,20 @@ namespace SkyrimMP
 
     struct PlayerState
     {
+        std::uint64_t characterId{};
         std::uint32_t formId{};
         std::uint32_t cellFormId{};
         std::uint32_t worldspaceFormId{};
 
         Vec3 position{};
         Vec3 rotation{};
+
+        float health{};
+        float magicka{};
+        float stamina{};
+        bool dead{};
+        bool inCombat{};
+        bool hasActorState{};
+        bool hasStatusState{};
     };
 }

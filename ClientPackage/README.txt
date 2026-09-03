@@ -23,16 +23,23 @@ Install
 Launcher modes
 --------------
 Play Single Player
-- Disables only Data\SKSE\Plugins\SkyrimMultiplayer.dll by renaming it to SkyrimMultiplayer.dll.disabled.
-- Does NOT disable other SKSE plugins or Skyrim mods.
-- Launches Skyrim through skse64_loader.exe.
-- No SkyrimMP relay or server connection is started.
+- Disables Data\SKSE\Plugins\SkyrimMultiplayer.dll for this and future single-player launches.
+- Launches Skyrim SE/AE through SKSE without connecting to a SkyrimMP server.
 
-Play Multiplayer
+Join Multiplayer Server
 - Re-enables SkyrimMultiplayer.dll if Single Player mode disabled it.
+- Load a single-player save made after leaving the Helgen cave. On the first
+  multiplayer login, the server moves that character to Riverwood and creates
+  a separate SkyrimMP_<character-id> save. Continue multiplayer from that save;
+  the original single-player save is preserved.
 - Starts the included local UDP relay.
 - Launches Skyrim through skse64_loader.exe.
 - Uses the server IPv4 / hostname entered in the launcher.
+
+Both modes require a locally owned Skyrim Special Edition or Anniversary Edition
+installation and a matching SKSE64 build. The dedicated server remains headless
+and authoritative for multiplayer sessions; Skyrim supplies the client game engine
+and locally owned game assets.
 
 LAN multiplayer
 ---------------
@@ -42,8 +49,9 @@ Internet multiplayer
 --------------------
 The server owner must forward UDP port 10578 from the router to the PC running SkyrimMPServer.exe and allow SkyrimMPServer.exe / UDP 10578 through Windows Firewall. Remote players use the server owner's public IPv4 address in the launcher.
 
-Current controlled test limitation
-----------------------------------
-The native client proxy layer is currently intentionally limited to ONE remote player proxy per client. The server can accept more sessions; we will lift the visual proxy cap after the controlled runtime test is stable.
+Current multiplayer capacity
+----------------------------
+The default server limit is 64 players. Each client can materialize up to 63
+remote-player proxies and excludes its own authoritative player entity.
 
 Do not redistribute Bethesda game assets, SKSE, Creation content, or third-party mods with this package. This package contains only the SkyrimMultiplayer test DLL and our helper/launcher scripts.

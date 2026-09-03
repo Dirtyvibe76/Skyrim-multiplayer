@@ -1,6 +1,9 @@
 #include "SessionProtocol.h"
 
 #include <bit>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <stdexcept>
 #include <type_traits>
@@ -107,6 +110,15 @@ namespace SkyrimMP::Server
             interest.transform.pitch = ReadFloat(bytes, offset);
             interest.transform.yaw = ReadFloat(bytes, offset);
             interest.transform.roll = ReadFloat(bytes, offset);
+            interest.health = ReadFloat(bytes, offset);
+            interest.magicka = ReadFloat(bytes, offset);
+            interest.stamina = ReadFloat(bytes, offset);
+            const auto actorFlags = ReadIntegral<std::uint8_t>(bytes, offset);
+            if ((actorFlags & ~0x0Fu) != 0) throw std::runtime_error("session interest actor flags invalid");
+            interest.dead = (actorFlags & 0x01) != 0;
+            interest.inCombat = (actorFlags & 0x02) != 0;
+            interest.hasActorState = (actorFlags & 0x04) != 0;
+            interest.hasStatusState = (actorFlags & 0x08) != 0;
             interest.exteriorRadiusCells = ReadIntegral<std::int32_t>(bytes, offset);
             if (!interest.location.hasCell) throw std::runtime_error("session interest missing CELL");
             if (interest.location.exterior && !interest.location.hasWorldspace) throw std::runtime_error("session exterior interest missing WRLD");
@@ -169,21 +181,61 @@ namespace SkyrimMP::Server
         AppendKey(out, interest.location.worldspace);
         AppendFloat(out, interest.transform.x); AppendFloat(out, interest.transform.y); AppendFloat(out, interest.transform.z);
         AppendFloat(out, interest.transform.pitch); AppendFloat(out, interest.transform.yaw); AppendFloat(out, interest.transform.roll);
+        AppendFloat(out, interest.health); AppendFloat(out, interest.magicka); AppendFloat(out, interest.stamina);
+        std::uint8_t actorFlags = 0;
+        if (interest.dead) actorFlags |= 0x01;
+        if (interest.inCombat) actorFlags |= 0x02;
+        if (interest.hasActorState) actorFlags |= 0x04;
+        if (interest.hasStatusState) actorFlags |= 0x08;
+        AppendIntegral(out, actorFlags);
         AppendIntegral(out, interest.exteriorRadiusCells);
         return out;
     }
 
-    ServerSessionManager::ServerSessionManager(std::string loadOrderRevision, std::uint32_t maxPlayers) :
-        loadOrderRevision_(std::move(loadOrderRevision)), maxPlayers_(maxPlayers)
+    ServerSessionManager::ServerSessionManager(
+        std::string loadOrderRevision,
+        std::uint32_t maxPlayers,
+        std::string firstLoginLedgerPath) :
+        loadOrderRevision_(std::move(loadOrderRevision)),
+        firstLoginLedgerPath_(std::move(firstLoginLedgerPath)),
+        maxPlayers_(maxPlayers)
     {
         if (loadOrderRevision_.empty()) throw std::runtime_error("server session manager requires load-order revision");
         if (maxPlayers_ == 0) throw std::runtime_error("server session manager maxPlayers cannot be zero");
+        if (!firstLoginLedgerPath_.empty()) {
+            playerStateDirectory_ = (std::filesystem::path(firstLoginLedgerPath_).parent_path() / "players").string();
+            std::ifstream input(firstLoginLedgerPath_);
+            std::uint64_t characterId{};
+            while (input >> std::hex >> characterId) {
+                if (characterId != 0) seenClientNonces_.insert(characterId);
+            }
+        }
+    }
+
+    void ServerSessionManager::MarkFirstLoginComplete(std::uint64_t characterId)
+    {
+        if (characterId == 0 || !seenClientNonces_.insert(characterId).second || firstLoginLedgerPath_.empty()) return;
+        const std::filesystem::path path(firstLoginLedgerPath_);
+        if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path());
+        std::ofstream output(path, std::ios::app);
+        if (!output) throw std::runtime_error("failed to open first-login ledger");
+        output << std::hex << std::setw(16) << std::setfill('0') << characterId << '\n';
+        if (!output) throw std::runtime_error("failed to persist first-login ledger");
     }
 
     void ServerSessionManager::Reject(NetworkTransport& transport, const NetworkEndpoint& endpoint, SessionRejectReason reason)
     {
         transport.SendControl(endpoint, WireChannel::Reliable, EncodeReject(reason));
         ++stats_.rejected;
+    }
+
+    bool ServerSessionManager::CharacterAlreadyOnline(const NetworkEndpoint& endpoint, std::uint64_t characterId) const
+    {
+        if (characterId == 0) return true;
+        for (const auto& [otherEndpoint, session] : sessions_) {
+            if (!(otherEndpoint == endpoint) && session.clientNonce == characterId) return true;
+        }
+        return false;
     }
 
     void ServerSessionManager::ProcessAcknowledgements(NetworkTransport& transport)
@@ -220,6 +272,7 @@ namespace SkyrimMP::Server
                     if (protocol != kReplicationProtocolVersion) { Reject(transport, incoming.endpoint, SessionRejectReason::ProtocolMismatch); continue; }
                     if (revision != loadOrderRevision_) { Reject(transport, incoming.endpoint, SessionRejectReason::LoadOrderMismatch); continue; }
                     if (!sessions_.contains(incoming.endpoint) && sessions_.size() >= maxPlayers_) { Reject(transport, incoming.endpoint, SessionRejectReason::ServerFull); continue; }
+                    if (CharacterAlreadyOnline(incoming.endpoint, nonce)) { Reject(transport, incoming.endpoint, SessionRejectReason::CharacterAlreadyOnline); continue; }
                     auto [it, inserted] = sessions_.try_emplace(incoming.endpoint);
                     if (inserted) {
                         it->second.sessionId = nextSessionId_++;
@@ -337,6 +390,8 @@ namespace SkyrimMP::Server
         interest.location.hasCell = true;
         interest.location.cell = CanonicalRecordKey{ FormNamespaceKind::Full, 0, 0x1234 };
         interest.transform = WorldTransform{ 1, 2, 3, 0, 0, 0 };
+        interest.inCombat = true;
+        interest.hasStatusState = true;
         interest.exteriorRadiusCells = 1;
         const auto encoded = EncodeSessionInterest(7, interest);
         std::size_t offset = 0;
@@ -344,7 +399,8 @@ namespace SkyrimMP::Server
         if (ReadIntegral<std::uint64_t>(encoded, offset) != 7) throw std::runtime_error("session interest self-test id failed");
         const auto decoded = DecodeInterest(encoded, offset);
         EnsureConsumed(encoded, offset);
-        if (!decoded.location.hasCell || decoded.location.cell.localId != 0x1234 || decoded.transform.x != 1.0f) throw std::runtime_error("session interest self-test round-trip failed");
+        if (!decoded.location.hasCell || decoded.location.cell.localId != 0x1234 || decoded.transform.x != 1.0f ||
+            !decoded.inCombat || !decoded.hasStatusState) throw std::runtime_error("session interest self-test round-trip failed");
         std::cout << "[SESSION] handshake=true protocolValidation=true loadOrderValidation=true maxPlayers=true heartbeat=true disconnect=true replication=true interest=true batching=true ackTracking=true\n";
         std::cout << "[SESSION-SELFTEST] hello=true welcome=true authenticated=true heartbeat=true replication=true disconnect=true interest=true\n";
     }

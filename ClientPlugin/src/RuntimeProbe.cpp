@@ -1,10 +1,38 @@
 #include "pch.h"
 
 #include "ClientNetwork.h"
+#include "GameplayEventProbe.h"
 #include "RuntimeProbe.h"
 
 namespace SkyrimMP
 {
+    namespace
+    {
+        std::uint64_t CharacterId(const RE::PlayerCharacter& player)
+        {
+            if (const auto* saves = RE::BGSSaveLoadManager::GetSingleton(); saves && saves->currentCharacterID != 0) {
+                return saves->currentCharacterID;
+            }
+
+            // Older/edge runtimes can briefly expose no save-manager ID. Keep
+            // a stable fallback based on immutable character-creation traits.
+            constexpr std::uint64_t offset = 14695981039346656037ull;
+            constexpr std::uint64_t prime = 1099511628211ull;
+            auto hash = offset;
+            const auto* name = player.GetName();
+            for (const auto* p = name; p && *p; ++p) {
+                auto c = static_cast<unsigned char>(*p);
+                if (c >= 'A' && c <= 'Z') c = static_cast<unsigned char>(c + ('a' - 'A'));
+                hash = (hash ^ c) * prime;
+            }
+            if (const auto* race = player.GetRace()) hash = (hash ^ race->GetFormID()) * prime;
+            if (const auto* base = player.GetActorBase()) {
+                hash = (hash ^ static_cast<std::uint64_t>(base->GetSex())) * prime;
+            }
+            return hash == 0 ? 1 : hash;
+        }
+    }
+
     PlayerState RuntimeProbe::ReadLocalPlayer()
     {
         PlayerState state{};
@@ -14,6 +42,7 @@ namespace SkyrimMP
             return state;
         }
 
+        state.characterId = CharacterId(*player);
         state.formId = player->GetFormID();
 
         const auto position = player->GetPosition();
@@ -37,6 +66,11 @@ namespace SkyrimMP
                 state.worldspaceFormId = worldspace->GetFormID();
             }
         }
+
+        const auto gameplay = GameplayEventProbe::Snapshot();
+        state.dead = gameplay.dead;
+        state.inCombat = gameplay.inCombat;
+        state.hasStatusState = gameplay.valid;
 
         return state;
     }
@@ -98,4 +132,5 @@ namespace SkyrimMP
         previous = state;
         firstSample = false;
     }
+
 }

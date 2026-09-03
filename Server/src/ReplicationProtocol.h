@@ -8,7 +8,7 @@
 
 namespace SkyrimMP::Server
 {
-    constexpr std::uint16_t kReplicationProtocolVersion = 3;
+    constexpr std::uint16_t kReplicationProtocolVersion = 6;
 
     enum class ReplicationMessageKind : std::uint8_t
     {
@@ -26,6 +26,13 @@ namespace SkyrimMP::Server
         RuntimeEntityLocation location;
         CanonicalRecordKey sourceRecord;
         bool hasSourceRecord{};
+        float health{};
+        float magicka{};
+        float stamina{};
+        bool dead{};
+        bool inCombat{};
+        bool hasActorState{};
+        bool hasStatusState{};
     };
 
     struct ReplicationMessage
@@ -47,6 +54,13 @@ namespace SkyrimMP::Server
     {
         RuntimeEntityLocation location;
         WorldTransform transform;
+        float health{};
+        float magicka{};
+        float stamina{};
+        bool dead{};
+        bool inCombat{};
+        bool hasActorState{};
+        bool hasStatusState{};
         std::int32_t exteriorRadiusCells{ 1 };
     };
 

@@ -3,6 +3,7 @@
 #include "WorldBootstrapManager.h"
 
 #include <atomic>
+#include <cstdio>
 #include <mutex>
 #include <optional>
 
@@ -19,17 +20,23 @@ namespace SkyrimMP
         {
             if (!player) return false;
             auto* cell = player->GetParentCell();
-            if (!cell || cell->GetFormID() != bootstrap.cellFormId) return false;
+            if (!cell) return false;
 
             std::uint32_t worldFormId = 0;
             if (auto* world = cell->GetRuntimeData().worldSpace) worldFormId = world->GetFormID();
-            return worldFormId == bootstrap.worldspaceFormId;
+            if (bootstrap.worldspaceFormId != 0) {
+                // Persistent exterior references can be owned by Tamriel's
+                // persistent CELL while their coordinates stream a neighboring
+                // exterior CELL. Worldspace is the authoritative context there.
+                return worldFormId == bootstrap.worldspaceFormId;
+            }
+            return cell->GetFormID() == bootstrap.cellFormId;
         }
     }
 
     void WorldBootstrapManager::Enqueue(const ServerWorldBootstrap& bootstrap)
     {
-        if (bootstrap.playerEntityId == 0 || bootstrap.anchorRuntimeFormId == 0 || bootstrap.cellFormId == 0) {
+        if (bootstrap.playerEntityId == 0 || bootstrap.cellFormId == 0) {
             logs::warn("[WORLD BOOTSTRAP DROP] reason=invalid identity anchor={:08X} cell={:08X}",
                 bootstrap.anchorRuntimeFormId,
                 bootstrap.cellFormId);
@@ -62,17 +69,23 @@ namespace SkyrimMP
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) return 0;
 
-        auto* anchorForm = RE::TESForm::LookupByID(bootstrap.anchorRuntimeFormId);
-        auto* anchor = anchorForm ? anchorForm->As<RE::TESObjectREFR>() : nullptr;
-        if (!anchor) {
-            logs::warn("[WORLD BOOTSTRAP WAIT] anchor={:08X} reason=reference unavailable", bootstrap.anchorRuntimeFormId);
+        // Protocol v4 accepts the client's already-loaded location as the initial
+        // server-owned spawn. An optional anchor remains available for future server
+        // transfers, but ordinary joins never depend on an unloaded world reference.
+        if (bootstrap.anchorRuntimeFormId != 0) {
+            auto* anchorForm = RE::TESForm::LookupByID(bootstrap.anchorRuntimeFormId);
+            auto* anchor = anchorForm ? anchorForm->As<RE::TESObjectREFR>() : nullptr;
+            if (!anchor) {
+                logs::warn("[WORLD BOOTSTRAP WAIT] anchor={:08X} reason=reference unavailable", bootstrap.anchorRuntimeFormId);
+                return 0;
+            }
+            player->MoveTo(anchor);
+        } else if (!ContextMatches(bootstrap, player)) {
+            logs::warn(
+                "[WORLD BOOTSTRAP WAIT] playerEntity={:016X} reason=local context not ready",
+                bootstrap.playerEntityId);
             return 0;
         }
-
-        // The anchor is a server-selected vanilla placed reference. MoveTo performs the
-        // cell/world transition using Skyrim's own relocation path; no background thread
-        // touches runtime objects.
-        player->MoveTo(anchor);
         player->SetPosition(RE::NiPoint3{
             bootstrap.position.x,
             bootstrap.position.y,
@@ -92,6 +105,20 @@ namespace SkyrimMP
         }
 
         const auto observed = player->GetPosition();
+
+        // A non-zero anchor denotes the one-time Riverwood import. Branch the
+        // user's post-Helgen single-player save before multiplayer progression.
+        if (bootstrap.anchorRuntimeFormId != 0) {
+            if (auto* saves = RE::BGSSaveLoadManager::GetSingleton()) {
+                char branchName[64]{};
+                std::snprintf(branchName, sizeof(branchName), "SkyrimMP_%08X", saves->currentCharacterID);
+                saves->Save(branchName);
+                logs::info("[WORLD BOOTSTRAP SAVE] branch={} sourcePreserved=true", branchName);
+            } else {
+                logs::error("[WORLD BOOTSTRAP SAVE] failed: save manager unavailable");
+                return 0;
+            }
+        }
         {
             std::scoped_lock lock(g_mutex);
             g_pending.reset();
