@@ -1,4 +1,5 @@
 #include "BethesdaPlugin.h"
+#include "FormIdResolver.h"
 #include "PluginStack.h"
 
 #include <windows.h>
@@ -229,7 +230,8 @@ namespace
     void WriteManifest(
         const ServerConfig& config,
         const std::vector<ManifestFile>& files,
-        const std::vector<SkyrimMP::Server::PluginStackEntry>& pluginStack)
+        const std::vector<SkyrimMP::Server::PluginStackEntry>& pluginStack,
+        const std::vector<SkyrimMP::Server::PluginNamespace>& formNamespaces)
     {
         const auto parent = config.manifestPath.parent_path();
         if (!parent.empty()) {
@@ -249,7 +251,7 @@ namespace
         }
 
         out << "{\n";
-        out << "  \"schema\": 3,\n";
+        out << "  \"schema\": 4,\n";
         out << "  \"serverName\": \"" << JsonEscape(config.name) << "\",\n";
         out << "  \"fileCount\": " << files.size() << ",\n";
         out << "  \"pluginCount\": " << pluginCount << ",\n";
@@ -257,10 +259,14 @@ namespace
         out << "  \"pluginStack\": [\n";
         for (std::size_t i = 0; i < pluginStack.size(); ++i) {
             const auto& entry = pluginStack[i];
+            const auto& ns = formNamespaces.at(i);
             out << "    {\"stackIndex\":" << entry.stackIndex
                 << ",\"name\":\"" << JsonEscape(entry.header.filename)
                 << "\",\"source\":\"" << SkyrimMP::Server::PluginSourceName(entry.source)
-                << "\",\"masters\":[";
+                << "\",\"formNamespace\":\"" << SkyrimMP::Server::FormNamespaceKindName(ns.kind)
+                << "\",\"namespaceIndex\":" << ns.namespaceIndex
+                << ",\"localIdBits\":" << ns.localIdBits
+                << ",\"masters\":[";
             for (std::size_t m = 0; m < entry.header.masters.size(); ++m) {
                 if (m != 0) out << ',';
                 out << '"' << JsonEscape(entry.header.masters[m]) << '"';
@@ -321,7 +327,8 @@ int main(int argc, char** argv)
         }
 
         const auto pluginStack = SkyrimMP::Server::ResolvePluginStack(hostedPlugins, config.gameDataPath);
-        WriteManifest(config, files, pluginStack);
+        const auto formNamespaces = SkyrimMP::Server::BuildFormNamespaces(pluginStack);
+        WriteManifest(config, files, pluginStack, formNamespaces);
 
         const auto pluginCount = std::count_if(files.begin(), files.end(), [](const auto& file) { return file.plugin; });
         std::cout << "[MODS] files=" << files.size() << " plugins=" << pluginCount << '\n';
@@ -341,14 +348,19 @@ int main(int argc, char** argv)
         }
 
         std::cout << "[STACK] resolved=" << pluginStack.size() << '\n';
-        for (const auto& entry : pluginStack) {
+        for (std::size_t i = 0; i < pluginStack.size(); ++i) {
+            const auto& entry = pluginStack[i];
+            const auto& ns = formNamespaces[i];
             std::cout << "[STACK] index=" << entry.stackIndex
                       << " source=" << SkyrimMP::Server::PluginSourceName(entry.source)
+                      << " namespace=" << SkyrimMP::Server::FormNamespaceKindName(ns.kind)
+                      << ':' << ns.namespaceIndex
+                      << " localBits=" << ns.localIdBits
                       << " plugin=" << entry.header.filename << '\n';
         }
 
         std::cout << "[MODS] manifest=" << fs::absolute(config.manifestPath).string() << '\n';
-        std::cout << "[PASS] server mod-host manifest + TES4 master-chain resolution complete\n";
+        std::cout << "[PASS] server mod-host manifest + canonical FormID namespaces complete\n";
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "[FATAL] " << ex.what() << '\n';
