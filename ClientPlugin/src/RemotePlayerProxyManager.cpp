@@ -60,11 +60,12 @@ namespace SkyrimMP
 
             const auto existing = g_pending.find(command.networkEntityId);
             if (existing != g_pending.end()) {
-                if (command.kind == ProxyCommandKind::Despawn ||
-                    existing->second.kind == ProxyCommandKind::Despawn ||
-                    command.update.revision >= existing->second.update.revision) {
+                if (command.kind == ProxyCommandKind::Despawn) {
                     existing->second = command;
+                    return;
                 }
+                if (existing->second.kind == ProxyCommandKind::Despawn) return;
+                if (command.update.revision >= existing->second.update.revision) existing->second = command;
                 return;
             }
 
