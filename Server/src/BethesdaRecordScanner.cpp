@@ -106,6 +106,7 @@ namespace SkyrimMP::Server
                     if (groupSize < 24 || cursor + groupSize > end) {
                         throw std::runtime_error("invalid GRUP size in " + plugin.path.string());
                     }
+                    ++summary.groupCount;
                     ScanRange(input, cursor + 24, cursor + groupSize, plugin, namespaces, summary, sampleLimit);
                     cursor += groupSize;
                     continue;
@@ -177,6 +178,17 @@ namespace SkyrimMP::Server
         BethesdaRecordSummary summary;
         summary.pluginName = a_plugin.header.filename;
         ScanRange(input, 0, fileSize, a_plugin, namespaces, summary, a_sampleLimit);
+
+        const auto structuralCount = static_cast<std::uint64_t>(summary.recordCount) + summary.groupCount;
+        if (structuralCount != a_plugin.header.recordCount) {
+            throw std::runtime_error(
+                "TES4 HEDR structural count mismatch in " + a_plugin.path.string() +
+                ": records=" + std::to_string(summary.recordCount) +
+                " groups=" + std::to_string(summary.groupCount) +
+                " total=" + std::to_string(structuralCount) +
+                " HEDR=" + std::to_string(a_plugin.header.recordCount));
+        }
+
         return summary;
     }
 }
