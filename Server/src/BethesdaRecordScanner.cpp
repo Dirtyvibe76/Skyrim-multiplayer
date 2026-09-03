@@ -141,6 +141,13 @@ namespace SkyrimMP::Server
                         }
                     } else {
                         ++summary.canonicalUnresolved;
+                        if (summary.unresolvedSamples.size() < 16) {
+                            summary.unresolvedSamples.push_back(BethesdaUnresolvedRecord{
+                                signature,
+                                rawFormId,
+                                recordFlags
+                            });
+                        }
                     }
                 }
 
