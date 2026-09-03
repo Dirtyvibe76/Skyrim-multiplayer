@@ -30,11 +30,18 @@ New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
 $destination = Join-Path $pluginDir 'SkyrimMultiplayer.dll'
 Copy-Item -Force $dllSource $destination
 
+$launcherConfig = Join-Path $scriptRoot 'SkyrimMP-Launcher.ini'
+if (-not (Test-Path $launcherConfig)) {
+    @(
+        "SkyrimPath=$SkyrimPath"
+        'ServerAddress=127.0.0.1'
+    ) | Set-Content -Path $launcherConfig -Encoding UTF8
+}
+
 Write-Host ''
 Write-Host 'SkyrimMultiplayer client installed:'
 Write-Host "  $destination"
 Write-Host ''
-Write-Host 'Next:'
-Write-Host '  1. Run Connect-To-SkyrimMP.ps1 and enter the server IPv4 address.'
-Write-Host '  2. Leave the relay window open.'
-Write-Host '  3. Launch Skyrim through SKSE.'
+Write-Host 'Use the included "SkyrimMP Launcher.cmd" from now on.'
+Write-Host '  Play Single Player  -> disables only SkyrimMultiplayer.dll and starts SKSE.'
+Write-Host '  Play Multiplayer    -> enables SkyrimMultiplayer.dll, starts the relay, then starts SKSE.'
