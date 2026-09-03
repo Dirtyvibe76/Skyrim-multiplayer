@@ -6,6 +6,7 @@
 #include "ActorState.h"
 
 #include <cmath>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -60,7 +61,6 @@ namespace SkyrimMP
 
             if (auto* cell = a_actor->GetParentCell()) {
                 state.cellFormId = cell->GetFormID();
-
                 if (auto* worldspace = cell->GetRuntimeData().worldSpace) {
                     state.worldspaceFormId = worldspace->GetFormID();
                 }
@@ -90,9 +90,15 @@ namespace SkyrimMP
             const float dx = a_actor.position.x - a_player.position.x;
             const float dy = a_actor.position.y - a_player.position.y;
             const float dz = a_actor.position.z - a_player.position.z;
-            const float distanceSquared = dx * dx + dy * dy + dz * dz;
+            return dx * dx + dy * dy + dz * dz <= kExteriorRelevanceRadiusSquared;
+        }
 
-            return distanceSquared <= kExteriorRelevanceRadiusSquared;
+        float DistanceSquaredToPlayer(const ActorState& a_actor, const PlayerState& a_player)
+        {
+            const float dx = a_actor.position.x - a_player.position.x;
+            const float dy = a_actor.position.y - a_player.position.y;
+            const float dz = a_actor.position.z - a_player.position.z;
+            return dx * dx + dy * dy + dz * dz;
         }
 
         bool PositionChanged(const ActorState& a_current, const ActorState& a_previous)
@@ -165,7 +171,7 @@ namespace SkyrimMP
             }
         }
 
-        void ConsiderStreamCandidate(std::uint32_t a_runtimeFormId)
+        void ConsiderStreamCandidate(std::uint32_t a_runtimeFormId, float a_distanceSquared)
         {
             if (g_streamComplete || g_streamActive || a_runtimeFormId == 0) {
                 return;
@@ -175,9 +181,22 @@ namespace SkyrimMP
                 g_streamCandidate = a_runtimeFormId;
                 g_streamCandidateSince = std::chrono::steady_clock::now();
                 logs::info(
-                    "[REMOTE STREAM PROBE] candidate form={:08X}; waiting 5 seconds before 10 Hz / 10 second transform stream",
-                    a_runtimeFormId);
+                    "[REMOTE STREAM PROBE] nearest candidate form={:08X} distance={:.1f}; waiting 5 seconds before 10 Hz / 10 second transform stream",
+                    a_runtimeFormId,
+                    std::sqrt(a_distanceSquared));
             }
+        }
+
+        void ClearStreamState(bool a_complete)
+        {
+            g_streamActive = false;
+            g_streamComplete = a_complete;
+            g_streamCandidate = 0;
+            g_streamCandidateSince = {};
+            g_streamStarted = {};
+            g_streamLastApplied = {};
+            g_streamOriginal = {};
+            g_streamTick = 0;
         }
 
         void AbortActiveStream(const char* a_reason)
@@ -188,18 +207,10 @@ namespace SkyrimMP
             }
 
             logs::warn(
-                "[REMOTE STREAM ABORT] form={:08X} reason={}",
+                "[REMOTE STREAM ABORT] form={:08X} reason={}; re-arming nearest-actor selection",
                 g_streamCandidate,
                 a_reason);
-
-            g_streamActive = false;
-            g_streamComplete = true;
-            g_streamCandidate = 0;
-            g_streamCandidateSince = {};
-            g_streamStarted = {};
-            g_streamLastApplied = {};
-            g_streamOriginal = {};
-            g_streamTick = 0;
+            ClearStreamState(false);
         }
 
         void RestoreStreamActor(RE::Actor* a_actor)
@@ -298,15 +309,7 @@ namespace SkyrimMP
                         "[REMOTE STREAM COMPLETE] form={:08X} actor unavailable at restore",
                         g_streamCandidate);
                 }
-
-                g_streamActive = false;
-                g_streamComplete = true;
-                g_streamCandidate = 0;
-                g_streamCandidateSince = {};
-                g_streamStarted = {};
-                g_streamLastApplied = {};
-                g_streamOriginal = {};
-                g_streamTick = 0;
+                ClearStreamState(true);
                 return;
             }
 
@@ -378,7 +381,8 @@ namespace SkyrimMP
             }
 
             std::unordered_set<std::uint32_t> currentRelevant;
-            std::uint32_t firstRelevant = 0;
+            std::uint32_t nearestRelevant = 0;
+            float nearestDistanceSquared = std::numeric_limits<float>::max();
 
             for (const auto& [runtimeFormId, baseFormId] : g_knownActors) {
                 if (runtimeFormId == playerState.formId) {
@@ -401,8 +405,13 @@ namespace SkyrimMP
                 }
 
                 currentRelevant.insert(runtimeFormId);
-                if (firstRelevant == 0 && actor->Get3D()) {
-                    firstRelevant = runtimeFormId;
+
+                if (actor->Get3D()) {
+                    const float distanceSquared = DistanceSquaredToPlayer(state, playerState);
+                    if (distanceSquared < nearestDistanceSquared) {
+                        nearestDistanceSquared = distanceSquared;
+                        nearestRelevant = runtimeFormId;
+                    }
                 }
 
                 const auto previousIt = g_lastRelevantState.find(runtimeFormId);
@@ -482,12 +491,10 @@ namespace SkyrimMP
             }
 
             if (!g_streamComplete && !g_streamActive) {
-                if (g_streamCandidate == 0 || !g_relevantActors.contains(g_streamCandidate)) {
-                    if (firstRelevant != 0) {
-                        ConsiderStreamCandidate(firstRelevant);
-                    } else {
-                        ResetStreamCandidate();
-                    }
+                if (nearestRelevant != 0) {
+                    ConsiderStreamCandidate(nearestRelevant, nearestDistanceSquared);
+                } else {
+                    ResetStreamCandidate();
                 }
             }
         }
@@ -498,7 +505,7 @@ namespace SkyrimMP
         REL::Relocation<std::uintptr_t> playerVTable{ RE::VTABLE_PlayerCharacter[0] };
         originalUpdate = playerVTable.write_vfunc(0xAD, Update);
 
-        logs::info("[RE-0.6a] PlayerCharacter::Update hook installed; sustained synthetic remote transform stream armed");
+        logs::info("[RE-0.6b] PlayerCharacter::Update hook installed; nearest-actor sustained synthetic remote transform stream armed");
     }
 
     void MainThreadHook::ResetActorCache()
@@ -514,7 +521,7 @@ namespace SkyrimMP
         g_streamLastApplied = {};
         g_streamOriginal = {};
         g_streamTick = 0;
-        logs::info("[RE-0.6a] actor caches reset; sustained transform stream re-armed");
+        logs::info("[RE-0.6b] actor caches reset; nearest-actor sustained transform stream re-armed");
     }
 
     void MainThreadHook::Update(RE::Actor* a_actor, float a_delta)
@@ -526,7 +533,7 @@ namespace SkyrimMP
         static bool firstUpdateLogged = false;
 
         if (!firstUpdateLogged) {
-            logs::info("[RE-0.6a] PlayerCharacter::Update hook executing");
+            logs::info("[RE-0.6b] PlayerCharacter::Update hook executing");
             firstUpdateLogged = true;
         }
 
@@ -534,7 +541,6 @@ namespace SkyrimMP
 
         if (lastPlayerSample.time_since_epoch().count() == 0 ||
             now - lastPlayerSample >= 100ms) {
-
             RuntimeProbe::LogLocalPlayer();
             lastPlayerSample = now;
         }
@@ -598,7 +604,6 @@ namespace SkyrimMP
 
         if (lastActorSample.time_since_epoch().count() == 0 ||
             now - lastActorSample >= 500ms) {
-
             SampleRelevantActors();
             lastActorSample = now;
         }
