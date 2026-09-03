@@ -8,6 +8,7 @@ on:
     paths:
       - 'ClientPlugin/**'
       - 'Shared/**'
+      - 'Server/**'
       - 'ClientPackage/**'
       - 'ClientLauncher/**'
       - 'External/**'
@@ -37,6 +38,10 @@ jobs:
       - name: Build client DLL
         shell: cmd
         run: xmake build -vD SkyrimMultiplayer
+
+      - name: Build dedicated server
+        shell: cmd
+        run: xmake build -vD SkyrimMPServer
 
       - name: Build standalone launcher EXE
         shell: powershell
