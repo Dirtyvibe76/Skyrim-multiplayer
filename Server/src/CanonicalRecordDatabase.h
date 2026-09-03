@@ -30,6 +30,8 @@ namespace SkyrimMP::Server
         std::uint32_t recordFlags{};
         std::uint32_t sourceStackIndex{};
         std::string sourcePlugin;
+        std::uint64_t dataOffset{};
+        std::uint32_t dataSize{};
     };
 
     struct CanonicalRecordDatabase
