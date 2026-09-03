@@ -226,5 +226,6 @@ namespace SkyrimMP::Server
         RunWireProtocolSelfTest();
         RunNetworkTransportSelfTest();
         RunSessionProtocolSelfTest();
+        RunSessionSocketSelfTest();
     }
 }
