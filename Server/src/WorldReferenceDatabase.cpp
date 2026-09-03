@@ -2,6 +2,7 @@
 #include "WorldSpatialContext.h"
 #include "InterestManagementIndex.h"
 #include "RuntimeEntityRegistry.h"
+#include "DedicatedServerLoop.h"
 
 #include <zlib.h>
 
@@ -263,10 +264,13 @@ namespace SkyrimMP::Server
             throw std::runtime_error("world reference/interest-index record-count invariant failed");
         }
 
-        const auto entities = BuildRuntimeEntityRegistry(world, spatial);
+        auto entities = BuildRuntimeEntityRegistry(world, spatial);
         if (entities.staticEntities != interest.activeRecords) {
             throw std::runtime_error("runtime entity/interest active-count invariant failed");
         }
+
+        std::cout << "[PASS] authoritative world bootstrap complete; entering live dedicated server loop\n";
+        RunDedicatedServerLoop(entities, GetLastPluginLoadOrderInfo().revisionHash);
 
         return world;
     }
