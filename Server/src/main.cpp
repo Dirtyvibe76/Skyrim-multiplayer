@@ -402,7 +402,9 @@ int main(int argc, char** argv)
         const auto payloadSummary = SkyrimMP::Server::ImportGameplayPayloads(recordDatabase, pluginStack);
         std::cout << "[PAYLOAD] candidates=" << payloadSummary.candidateRecords
                   << " parsed=" << payloadSummary.parsedRecords
-                  << " compressedDeferred=" << payloadSummary.deferredCompressed
+                  << " compressed=" << payloadSummary.compressedRecords
+                  << " compressedBytes=" << payloadSummary.compressedBytes
+                  << " decompressedBytes=" << payloadSummary.decompressedBytes
                   << " subrecords=" << payloadSummary.subrecords
                   << " editorIds=" << payloadSummary.editorIds
                   << " types=" << payloadSummary.typeCounts.size() << '\n';
@@ -416,7 +418,8 @@ int main(int argc, char** argv)
                       << ":0x" << std::hex << std::uppercase << sample.key.localId
                       << std::dec << std::nouppercase
                       << " plugin=" << sample.plugin
-                      << " subrecords=" << sample.subrecordCount;
+                      << " subrecords=" << sample.subrecordCount
+                      << " compressed=" << (sample.compressed ? "true" : "false");
             if (!sample.editorId.empty()) {
                 std::cout << " EDID=" << sample.editorId;
             }
@@ -424,7 +427,7 @@ int main(int argc, char** argv)
         }
 
         std::cout << "[MODS] manifest=" << fs::absolute(config.manifestPath).string() << '\n';
-        std::cout << "[PASS] server canonical database + uncompressed gameplay payload import complete\n";
+        std::cout << "[PASS] server canonical database + complete gameplay payload import complete\n";
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "[FATAL] " << ex.what() << '\n';
