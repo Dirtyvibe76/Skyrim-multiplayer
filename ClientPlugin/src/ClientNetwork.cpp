@@ -2,6 +2,7 @@
 
 #include "ClientNetwork.h"
 #include "RemotePlayerProxyManager.h"
+#include "WorldBootstrapManager.h"
 
 #include <atomic>
 #include <bit>
@@ -23,7 +24,7 @@ namespace SkyrimMP
 
         constexpr std::uint32_t kWireMagic = 0x31504D53u;
         constexpr std::uint16_t kWireProtocolVersion = 2;
-        constexpr std::uint16_t kReplicationProtocolVersion = 2;
+        constexpr std::uint16_t kReplicationProtocolVersion = 3;
         constexpr std::uint16_t kServerPort = 10578;
         constexpr auto kLoadOrderRevision = "7dc35a831945468b790a6b3398236c0fe9fe7c8b32425be9ef07ca1434d6c808";
         constexpr std::size_t kMaxDatagram = 1200;
@@ -31,7 +32,17 @@ namespace SkyrimMP
 
         enum class PacketKind : std::uint8_t { Data = 1, Ack = 2, Control = 3 };
         enum class Channel : std::uint8_t { Unreliable = 0, Reliable = 1 };
-        enum class ControlKind : std::uint8_t { Hello = 1, Welcome = 2, Reject = 3, Heartbeat = 4, Disconnect = 5, Interest = 6 };
+        enum class ControlKind : std::uint8_t
+        {
+            Hello = 1,
+            Welcome = 2,
+            Reject = 3,
+            Heartbeat = 4,
+            Disconnect = 5,
+            Interest = 6,
+            BootstrapRequest = 7,
+            WorldBootstrap = 8
+        };
         enum class ReplicationKind : std::uint8_t { Spawn = 0, Delta = 1, Despawn = 2 };
 
         struct CanonicalKey
@@ -161,6 +172,14 @@ namespace SkyrimMP
         {
             std::vector<std::uint8_t> out;
             Append(out, static_cast<std::uint8_t>(ControlKind::Heartbeat));
+            Append(out, sessionId);
+            return out;
+        }
+
+        std::vector<std::uint8_t> EncodeBootstrapRequest(std::uint64_t sessionId)
+        {
+            std::vector<std::uint8_t> out;
+            Append(out, static_cast<std::uint8_t>(ControlKind::BootstrapRequest));
             Append(out, sessionId);
             return out;
         }
@@ -299,6 +318,55 @@ namespace SkyrimMP
             }
         }
 
+        void DecodeWorldBootstrap(
+            const std::vector<std::uint8_t>& bytes,
+            std::size_t& offset,
+            std::uint64_t expectedSession,
+            bool& bootstrapReceived)
+        {
+            const auto sessionId = Read<std::uint64_t>(bytes, offset);
+            if (sessionId != expectedSession) throw std::runtime_error("world bootstrap session mismatch");
+
+            const auto playerEntityId = Read<std::uint64_t>(bytes, offset);
+            if ((playerEntityId & (1ull << 63)) == 0) throw std::runtime_error("world bootstrap player id is not dynamic");
+
+            const auto anchor = ReadKey(bytes, offset);
+            const auto flags = Read<std::uint8_t>(bytes, offset);
+            const auto cell = ReadKey(bytes, offset);
+            const auto world = ReadKey(bytes, offset);
+            const Vec3 position{ ReadFloat(bytes, offset), ReadFloat(bytes, offset), ReadFloat(bytes, offset) };
+            const Vec3 rotation{ ReadFloat(bytes, offset), ReadFloat(bytes, offset), ReadFloat(bytes, offset) };
+
+            const bool exterior = (flags & 0x01) != 0;
+            const bool hasCell = (flags & 0x02) != 0;
+            const bool hasWorld = (flags & 0x04) != 0;
+            if (!hasCell || (exterior && !hasWorld)) throw std::runtime_error("world bootstrap location flags invalid");
+
+            const auto anchorFormId = CanonicalToRuntimeForm(anchor);
+            const auto cellFormId = CanonicalToRuntimeForm(cell);
+            const auto worldFormId = hasWorld ? CanonicalToRuntimeForm(world) : 0;
+            if (anchorFormId == 0 || cellFormId == 0 || (hasWorld && worldFormId == 0)) {
+                throw std::runtime_error("world bootstrap canonical forms are not runtime-resolvable");
+            }
+
+            WorldBootstrapManager::Enqueue(ServerWorldBootstrap{
+                playerEntityId,
+                anchorFormId,
+                cellFormId,
+                worldFormId,
+                position,
+                rotation
+            });
+            bootstrapReceived = true;
+            g_authenticated.store(true, std::memory_order_release);
+            logs::info(
+                "[NET-CLIENT] server world bootstrap playerEntity={:016X} anchor={:08X} cell={:08X} world={:08X} authority=server",
+                playerEntityId,
+                anchorFormId,
+                cellFormId,
+                worldFormId);
+        }
+
         void NetworkThread(std::stop_token stop)
         {
             WSADATA data{};
@@ -325,9 +393,11 @@ namespace SkyrimMP
             const std::uint64_t nonce = (static_cast<std::uint64_t>(GetCurrentProcessId()) << 32) ^
                 static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
             std::uint64_t sessionId = 0;
+            bool bootstrapReceived = false;
             std::uint32_t nextSequence = 1;
             auto lastHello = std::chrono::steady_clock::time_point{};
             auto lastHeartbeat = std::chrono::steady_clock::time_point{};
+            auto lastBootstrapRequest = std::chrono::steady_clock::time_point{};
             auto lastInterest = std::chrono::steady_clock::time_point{};
             std::uint64_t dataPackets = 0;
             std::uint64_t replicationMessages = 0;
@@ -337,7 +407,7 @@ namespace SkyrimMP
             std::unordered_map<std::uint64_t, ClientReplica> replicas;
             std::unordered_set<std::uint64_t> playerTombstones;
 
-            logs::info("[NET-CLIENT] worker started server=127.0.0.1:{} protocol={} revision={} remotePlayerProxy=controlled-one tombstones=true", kServerPort, kReplicationProtocolVersion, kLoadOrderRevision);
+            logs::info("[NET-CLIENT] worker started server=127.0.0.1:{} protocol={} revision={} worldBootstrap=server remotePlayerProxy=controlled-one tombstones=true", kServerPort, kReplicationProtocolVersion, kLoadOrderRevision);
 
             while (!stop.stop_requested() && g_running.load(std::memory_order_relaxed)) {
                 const auto now = std::chrono::steady_clock::now();
@@ -351,7 +421,13 @@ namespace SkyrimMP
                         SendDatagram(socketValue, server, MakePacket(PacketKind::Control, Channel::Reliable, nextSequence++, 0, EncodeHeartbeat(sessionId)));
                         lastHeartbeat = now;
                     }
-                    if (lastInterest.time_since_epoch().count() == 0 || now - lastInterest >= 250ms) {
+
+                    if (!bootstrapReceived) {
+                        if (lastBootstrapRequest.time_since_epoch().count() == 0 || now - lastBootstrapRequest >= 1s) {
+                            SendDatagram(socketValue, server, MakePacket(PacketKind::Control, Channel::Reliable, nextSequence++, 0, EncodeBootstrapRequest(sessionId)));
+                            lastBootstrapRequest = now;
+                        }
+                    } else if (lastInterest.time_since_epoch().count() == 0 || now - lastInterest >= 250ms) {
                         PlayerState player{};
                         bool hasPlayer = false;
                         {
@@ -406,11 +482,15 @@ namespace SkyrimMP
                                 const auto receivedNonce = Read<std::uint64_t>(bytes, offset);
                                 const auto maxPlayers = Read<std::uint32_t>(bytes, offset);
                                 if (protocol != kReplicationProtocolVersion || receivedNonce != nonce) throw std::runtime_error("welcome validation failed");
+                                if (offset != bytes.size()) throw std::runtime_error("welcome trailing bytes");
                                 if (sessionId == 0) {
                                     sessionId = receivedSession;
-                                    g_authenticated.store(true, std::memory_order_relaxed);
-                                    logs::info("[NET-CLIENT] authenticated session={} maxPlayers={}", sessionId, maxPlayers);
+                                    logs::info("[NET-CLIENT] session accepted={} maxPlayers={} requesting server world bootstrap", sessionId, maxPlayers);
                                 }
+                            } else if (controlKind == ControlKind::WorldBootstrap) {
+                                if (sessionId == 0) throw std::runtime_error("world bootstrap before welcome");
+                                DecodeWorldBootstrap(bytes, offset, sessionId, bootstrapReceived);
+                                if (offset != bytes.size()) throw std::runtime_error("world bootstrap trailing bytes");
                             } else if (controlKind == ControlKind::Reject) {
                                 const auto reason = Read<std::uint8_t>(bytes, offset);
                                 logs::error("[NET-CLIENT] server rejected connection reason={}", reason);
@@ -447,14 +527,15 @@ namespace SkyrimMP
             closesocket(socketValue);
             WSACleanup();
             logs::info(
-                "[NET-CLIENT] worker stopped packets={} messages={} active={} spawn={} delta={} despawn={} playerTombstones={}",
-                dataPackets, replicationMessages, replicas.size(), spawns, deltas, despawns, playerTombstones.size());
+                "[NET-CLIENT] worker stopped packets={} messages={} active={} spawn={} delta={} despawn={} playerTombstones={} bootstrap={}",
+                dataPackets, replicationMessages, replicas.size(), spawns, deltas, despawns, playerTombstones.size(), bootstrapReceived);
         }
     }
 
     void ClientNetwork::Start()
     {
         if (g_running.exchange(true, std::memory_order_acq_rel)) return;
+        WorldBootstrapManager::Reset();
         g_thread = std::jthread(NetworkThread);
     }
 
@@ -466,6 +547,7 @@ namespace SkyrimMP
             g_thread.join();
         }
         g_authenticated.store(false, std::memory_order_relaxed);
+        WorldBootstrapManager::Reset();
     }
 
     void ClientNetwork::SubmitLocalPlayer(const PlayerState& player)
