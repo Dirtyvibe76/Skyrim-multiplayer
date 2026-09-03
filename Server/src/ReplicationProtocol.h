@@ -58,10 +58,14 @@ namespace SkyrimMP::Server
         std::unordered_map<NetworkEntityId, PendingReliableEntityState> pendingReliable;
         // Last unreliable revision sent; this is not delivery confirmation.
         std::unordered_map<NetworkEntityId, std::uint64_t> lastUnreliableSentRevision;
+        // The authoritative Player entity owned by this client. It must never be replicated back to itself.
+        NetworkEntityId excludedEntityId{};
+        bool hasExcludedEntity{};
         std::uint64_t framesBuilt{};
         std::uint64_t spawnsSent{};
         std::uint64_t deltasSent{};
         std::uint64_t despawnsSent{};
+        std::uint64_t selfEntitiesExcluded{};
     };
 
     struct ReplicationFrame
@@ -73,6 +77,7 @@ namespace SkyrimMP::Server
         std::uint64_t spawns{};
         std::uint64_t deltas{};
         std::uint64_t despawns{};
+        std::uint64_t selfExcluded{};
     };
 
     std::vector<NetworkEntityId> CollectRuntimeInterestSet(
