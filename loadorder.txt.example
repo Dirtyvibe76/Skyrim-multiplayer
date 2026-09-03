@@ -1,0 +1,3 @@
+# SkyrimMP dedicated server hosted plugin load order.
+# Every enabled hosted plugin from plugins.txt must appear exactly once.
+ccBGSSSE037-Curios.esl
