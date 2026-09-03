@@ -6,6 +6,7 @@ namespace SkyrimMP
     {
     public:
         static void Install();
+        static void ResetActorCache();
 
     private:
         static void Update(RE::Actor* a_actor, float a_delta);
