@@ -17,13 +17,16 @@ namespace SkyrimMP::Server
         std::string editorId;
         CanonicalRecordKey key;
         std::uint32_t subrecordCount{};
+        bool compressed{};
     };
 
     struct GameplayPayloadSummary
     {
         std::uint64_t candidateRecords{};
         std::uint64_t parsedRecords{};
-        std::uint64_t deferredCompressed{};
+        std::uint64_t compressedRecords{};
+        std::uint64_t compressedBytes{};
+        std::uint64_t decompressedBytes{};
         std::uint64_t subrecords{};
         std::uint64_t editorIds{};
         std::map<std::string, std::uint64_t> typeCounts;
