@@ -7,7 +7,7 @@ namespace SkyrimMPLauncher;
 
 internal sealed class LauncherConfig
 {
-    public string SkyrimPath { get; set; } = @"C:\Program Files (x86)\Steam\steamapps\common\Skyrim Special Edition";
+    public string SkyrimPath { get; set; } = string.Empty;
     public string ServerAddress { get; set; } = "127.0.0.1";
     public int ServerPort { get; set; } = 10578;
 }
@@ -24,10 +24,10 @@ internal static class Program
 
 internal sealed class LauncherForm : Form
 {
-    private readonly TextBox _skyrimPath = new() { Dock = DockStyle.Fill };
+    private readonly TextBox _skyrimPath = new() { Dock = DockStyle.Fill, ReadOnly = true };
     private readonly TextBox _serverAddress = new() { Dock = DockStyle.Fill };
     private readonly NumericUpDown _serverPort = new() { Minimum = 1, Maximum = 65535, Value = 10578, Dock = DockStyle.Fill };
-    private readonly Label _status = new() { AutoSize = true, Text = "Ready." };
+    private readonly Label _status = new() { AutoSize = true, Text = "Choose this PC's Skyrim Special Edition folder." };
     private readonly string _configPath;
     private readonly CancellationTokenSource _shutdown = new();
     private Task? _relayTask;
@@ -35,8 +35,8 @@ internal sealed class LauncherForm : Form
     public LauncherForm()
     {
         Text = "SkyrimMP Launcher";
-        Width = 690;
-        Height = 320;
+        Width = 720;
+        Height = 330;
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -45,7 +45,7 @@ internal sealed class LauncherForm : Form
         Directory.CreateDirectory(appDir);
         _configPath = Path.Combine(appDir, "launcher.json");
 
-        var browse = new Button { Text = "Browse...", AutoSize = true };
+        var browse = new Button { Text = "Choose Skyrim Folder...", AutoSize = true };
         browse.Click += (_, _) => BrowseSkyrim();
 
         var single = new Button { Text = "Play Single Player", AutoSize = true, Height = 42 };
@@ -90,19 +90,53 @@ internal sealed class LauncherForm : Form
 
         Controls.Add(grid);
         LoadConfig();
+        Shown += (_, _) => EnsureSkyrimFolderSelected();
         FormClosing += (_, _) => _shutdown.Cancel();
     }
 
-    private void BrowseSkyrim()
+    private bool BrowseSkyrim()
     {
         using var dialog = new FolderBrowserDialog
         {
-            Description = "Select the Skyrim Special Edition folder",
+            Description = "Select THIS PC's Skyrim Special Edition install folder. It must contain SkyrimSE.exe and skse64_loader.exe.",
             UseDescriptionForTitle = true,
-            SelectedPath = Directory.Exists(_skyrimPath.Text) ? _skyrimPath.Text : string.Empty
+            SelectedPath = Directory.Exists(_skyrimPath.Text) ? _skyrimPath.Text : string.Empty,
+            ShowNewFolderButton = false
         };
-        if (dialog.ShowDialog(this) == DialogResult.OK)
-            _skyrimPath.Text = dialog.SelectedPath;
+
+        while (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            var selected = dialog.SelectedPath;
+            if (IsValidSkyrimFolder(selected, out var problem))
+            {
+                _skyrimPath.Text = selected;
+                var config = CurrentConfig();
+                SaveConfig(config);
+                _status.Text = $"Skyrim install selected: {selected}";
+                return true;
+            }
+
+            MessageBox.Show(this,
+                $"That is not a usable Skyrim Special Edition + SKSE folder.\n\n{problem}\n\nChoose the folder that contains SkyrimSE.exe and skse64_loader.exe.",
+                "Select Skyrim Install",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+
+        return false;
+    }
+
+    private void EnsureSkyrimFolderSelected()
+    {
+        if (IsValidSkyrimFolder(_skyrimPath.Text, out _))
+        {
+            _status.Text = $"Skyrim install: {_skyrimPath.Text}";
+            return;
+        }
+
+        _skyrimPath.Text = string.Empty;
+        _status.Text = "First run: select this PC's Skyrim Special Edition + SKSE install folder.";
+        BrowseSkyrim();
     }
 
     private LauncherConfig CurrentConfig() => new()
@@ -121,6 +155,7 @@ internal sealed class LauncherForm : Form
                 config = JsonSerializer.Deserialize<LauncherConfig>(File.ReadAllText(_configPath)) ?? config;
         }
         catch { }
+
         _skyrimPath.Text = config.SkyrimPath;
         _serverAddress.Text = config.ServerAddress;
         _serverPort.Value = Math.Clamp(config.ServerPort, 1, 65535);
@@ -135,9 +170,14 @@ internal sealed class LauncherForm : Form
     {
         try
         {
+            if (!IsValidSkyrimFolder(_skyrimPath.Text, out _))
+            {
+                if (!BrowseSkyrim()) return;
+            }
+
             var config = CurrentConfig();
-            SaveConfig(config);
             ValidateSkyrim(config.SkyrimPath);
+            SaveConfig(config);
             InstallBundledClientIfPresent(config.SkyrimPath);
 
             var pluginDir = Path.Combine(config.SkyrimPath, "Data", "SKSE", "Plugins");
@@ -182,12 +222,34 @@ internal sealed class LauncherForm : Form
         }
     }
 
+    private static bool IsValidSkyrimFolder(string path, out string problem)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+        {
+            problem = "The selected folder does not exist.";
+            return false;
+        }
+
+        if (!File.Exists(Path.Combine(path, "SkyrimSE.exe")))
+        {
+            problem = "SkyrimSE.exe was not found in that folder.";
+            return false;
+        }
+
+        if (!File.Exists(Path.Combine(path, "skse64_loader.exe")))
+        {
+            problem = "skse64_loader.exe was not found in that folder. Install the matching SKSE64 build first.";
+            return false;
+        }
+
+        problem = string.Empty;
+        return true;
+    }
+
     private static void ValidateSkyrim(string path)
     {
-        if (!File.Exists(Path.Combine(path, "SkyrimSE.exe")))
-            throw new InvalidOperationException("SkyrimSE.exe was not found in the selected folder.");
-        if (!File.Exists(Path.Combine(path, "skse64_loader.exe")))
-            throw new InvalidOperationException("skse64_loader.exe was not found. Install the correct SKSE64 build first.");
+        if (!IsValidSkyrimFolder(path, out var problem))
+            throw new InvalidOperationException(problem);
     }
 
     private static void InstallBundledClientIfPresent(string skyrimPath)
