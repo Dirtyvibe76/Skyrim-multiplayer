@@ -54,6 +54,12 @@ namespace SkyrimMP::Server
         std::vector<std::uint8_t> payload;
     };
 
+    struct ReceivedAcknowledgement
+    {
+        NetworkEndpoint endpoint;
+        std::uint32_t sequence{};
+    };
+
     struct NetworkTransportStats
     {
         std::uint64_t datagramsReceived{};
@@ -96,6 +102,7 @@ namespace SkyrimMP::Server
             const std::vector<std::uint8_t>& a_payload);
 
         std::vector<ReceivedControlPacket> DrainControlPackets();
+        std::vector<ReceivedAcknowledgement> DrainAcknowledgements();
         std::optional<NetworkSession> GetSession(const NetworkEndpoint& a_endpoint) const;
         std::size_t SessionCount() const noexcept;
         const NetworkTransportStats& Stats() const noexcept;
@@ -106,6 +113,7 @@ namespace SkyrimMP::Server
         bool winsockStarted_{};
         std::unordered_map<NetworkEndpoint, NetworkSession, NetworkEndpointHash> sessions_;
         std::vector<ReceivedControlPacket> controlInbox_;
+        std::vector<ReceivedAcknowledgement> ackInbox_;
         NetworkTransportStats stats_;
 
         NetworkSession& TouchSession(const NetworkEndpoint& a_endpoint);
