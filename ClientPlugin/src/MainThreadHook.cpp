@@ -21,7 +21,7 @@ namespace SkyrimMP
         constexpr float kRotationThreshold = 0.05f;
         constexpr float kPi = 3.14159265358979323846f;
         constexpr float kTwoPi = 2.0f * kPi;
-        constexpr float kWriteProbeRotationOffset = 0.05f;
+        constexpr float kWriteProbePitchOffset = 0.05f;
         constexpr auto kWriteProbeDelay = 5s;
 
         std::unordered_map<std::uint32_t, std::uint32_t> g_knownActors;
@@ -109,13 +109,15 @@ namespace SkyrimMP
                    WrappedAngleDelta(a_current.rotation.z, a_previous.rotation.z) >= kRotationThreshold;
         }
 
-        float NormalizeAngle(float a_angle)
+        float ClampPitch(float a_pitch)
         {
-            float normalized = std::fmod(a_angle, kTwoPi);
-            if (normalized < 0.0f) {
-                normalized += kTwoPi;
+            if (a_pitch < -kPi * 0.5f) {
+                return -kPi * 0.5f;
             }
-            return normalized;
+            if (a_pitch > kPi * 0.5f) {
+                return kPi * 0.5f;
+            }
+            return a_pitch;
         }
 
         void LogSpawn(const ActorState& a_state)
@@ -150,11 +152,11 @@ namespace SkyrimMP
             if (g_writeProbeCandidate != a_runtimeFormId) {
                 g_writeProbeCandidate = a_runtimeFormId;
                 g_writeProbeCandidateSince = std::chrono::steady_clock::now();
-                logs::info("[REMOTE ROTATION PROBE] candidate form={:08X}; waiting 5 seconds", a_runtimeFormId);
+                logs::info("[REMOTE PITCH PROBE] candidate form={:08X}; waiting 5 seconds", a_runtimeFormId);
             }
         }
 
-        void RunControlledRotationWriteProbe()
+        void RunControlledPitchWriteProbe()
         {
             if (g_writeProbeComplete ||
                 g_writeProbeCandidate == 0 ||
@@ -192,25 +194,25 @@ namespace SkyrimMP
                 return;
             }
 
-            const float requestedZ = NormalizeAngle(before.rotation.z + kWriteProbeRotationOffset);
+            const float requestedX = ClampPitch(before.rotation.x + kWriteProbePitchOffset);
 
             logs::info(
-                "[REMOTE ROTATION BEGIN] form={:08X} before=({:.3f},{:.3f},{:.3f}) requestedZ={:.3f}",
+                "[REMOTE PITCH BEGIN] form={:08X} before=({:.3f},{:.3f},{:.3f}) requestedX={:.3f}",
                 before.runtimeFormId,
                 before.rotation.x,
                 before.rotation.y,
                 before.rotation.z,
-                requestedZ);
+                requestedX);
 
-            // CommonLib exposes reference rotation through TESObjectREFR::data.angle.
-            // Update3DPosition(true) applies that transform to the live 3D/Havok state.
-            // Change yaw only, then immediately restore the original angle.
-            actor->data.angle.z = requestedZ;
+            // RE-0.5c showed local player vertical look is represented by GetAngle().x.
+            // Probe the matching inbound path on one re-resolved relevant actor.
+            // Change pitch only, verify readback, then restore immediately.
+            actor->data.angle.x = requestedX;
             actor->Update3DPosition(true);
 
             const auto appliedAngle = actor->GetAngle();
             logs::info(
-                "[REMOTE ROTATION APPLIED] form={:08X} observed=({:.3f},{:.3f},{:.3f})",
+                "[REMOTE PITCH APPLIED] form={:08X} observed=({:.3f},{:.3f},{:.3f})",
                 before.runtimeFormId,
                 appliedAngle.x,
                 appliedAngle.y,
@@ -223,7 +225,7 @@ namespace SkyrimMP
 
             const auto restoredAngle = actor->GetAngle();
             logs::info(
-                "[REMOTE ROTATION RESTORED] form={:08X} observed=({:.3f},{:.3f},{:.3f})",
+                "[REMOTE PITCH RESTORED] form={:08X} observed=({:.3f},{:.3f},{:.3f})",
                 before.runtimeFormId,
                 restoredAngle.x,
                 restoredAngle.y,
@@ -361,7 +363,7 @@ namespace SkyrimMP
         REL::Relocation<std::uintptr_t> playerVTable{ RE::VTABLE_PlayerCharacter[0] };
         originalUpdate = playerVTable.write_vfunc(0xAD, Update);
 
-        logs::info("[RE-0.5b] PlayerCharacter::Update hook installed; controlled inbound rotation write probe armed");
+        logs::info("[RE-0.5d] PlayerCharacter::Update hook installed; controlled inbound pitch write probe armed");
     }
 
     void MainThreadHook::ResetActorCache()
@@ -371,7 +373,7 @@ namespace SkyrimMP
         g_lastRelevantState.clear();
         g_writeProbeComplete = false;
         ResetWriteProbeCandidate();
-        logs::info("[RE-0.5b] actor caches reset; controlled rotation write probe re-armed");
+        logs::info("[RE-0.5d] actor caches reset; controlled pitch write probe re-armed");
     }
 
     void MainThreadHook::Update(RE::Actor* a_actor, float a_delta)
@@ -383,7 +385,7 @@ namespace SkyrimMP
         static bool firstUpdateLogged = false;
 
         if (!firstUpdateLogged) {
-            logs::info("[RE-0.5b] PlayerCharacter::Update hook executing");
+            logs::info("[RE-0.5d] PlayerCharacter::Update hook executing");
             firstUpdateLogged = true;
         }
 
@@ -453,7 +455,7 @@ namespace SkyrimMP
             now - lastActorSample >= 500ms) {
 
             SampleRelevantActors();
-            RunControlledRotationWriteProbe();
+            RunControlledPitchWriteProbe();
             lastActorSample = now;
         }
     }
