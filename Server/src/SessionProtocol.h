@@ -93,4 +93,5 @@ namespace SkyrimMP::Server
         const ClientInterestSubscription& a_interest);
 
     void RunSessionProtocolSelfTest();
+    void RunSessionSocketSelfTest();
 }
