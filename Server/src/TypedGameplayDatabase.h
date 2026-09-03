@@ -88,6 +88,8 @@ namespace SkyrimMP::Server
         std::uint64_t missingTargetReferences{};
         std::uint64_t targetTypeChecks{};
         std::uint64_t targetTypeMismatches{};
+        std::uint64_t itemClassChecks{};
+        std::uint64_t itemClassMismatches{};
     };
 
     TypedGameplayDatabase BuildTypedGameplayDatabase(
