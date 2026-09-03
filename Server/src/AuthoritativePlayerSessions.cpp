@@ -136,8 +136,6 @@ namespace SkyrimMP::Server
                 return false;
             }
 
-            // CELL/WRLD transitions are treated as explicit world transitions for now.
-            // Inside one spatial context, reject impossible single-request teleports.
             if (!SameLocationContext(current.location, requested.location)) return true;
 
             constexpr double kMaxStep = 16384.0;
@@ -252,6 +250,8 @@ namespace SkyrimMP::Server
                         requested.transform,
                         requested.location);
                     session.hasPlayerEntity = true;
+                    session.replication.excludedEntityId = session.playerEntityId;
+                    session.replication.hasExcludedEntity = true;
                     ++stats_.playerEntitiesSpawned;
                     ++stats_.playerStateApplied;
                 } else {
