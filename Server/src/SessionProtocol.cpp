@@ -113,6 +113,20 @@ namespace SkyrimMP::Server
             if (interest.exteriorRadiusCells < 0 || interest.exteriorRadiusCells > 8) throw std::runtime_error("session interest radius out of range");
             return interest;
         }
+
+        bool FitsWireBatch(WireChannel channel, const std::vector<ReplicationMessage>& messages)
+        {
+            WirePacket packet;
+            packet.kind = WirePacketKind::Data;
+            packet.channel = channel;
+            packet.sequence = 1;
+            packet.messages = messages;
+            try {
+                return SerializeWirePacket(packet).size() <= kMaxUdpDatagramBytes;
+            } catch (const std::exception&) {
+                return false;
+            }
+        }
     }
 
     std::vector<std::uint8_t> EncodeSessionHello(std::uint16_t protocolVersion, const std::string& loadOrderRevision, std::uint64_t clientNonce)
@@ -239,10 +253,37 @@ namespace SkyrimMP::Server
     {
         if (!IsAuthenticated(endpoint)) throw std::runtime_error("cannot replicate to unauthenticated endpoint");
         ++stats_.replicationFrames;
+        stats_.replicationMessages += frame.messages.size();
+
+        auto flushBatch = [&](WireChannel channel, std::vector<ReplicationMessage>& batch) {
+            if (batch.empty()) return;
+            transport.SendMessages(endpoint, channel, batch);
+            if (channel == WireChannel::Reliable) ++stats_.reliableReplicationPackets;
+            else ++stats_.unreliableReplicationPackets;
+            batch.clear();
+        };
+
+        std::vector<ReplicationMessage> reliableBatch;
+        std::vector<ReplicationMessage> unreliableBatch;
+        reliableBatch.reserve(16);
+        unreliableBatch.reserve(16);
+
         for (const auto& message : frame.messages) {
-            transport.SendMessages(endpoint, message.reliable ? WireChannel::Reliable : WireChannel::Unreliable, { message });
-            if (message.reliable) ++stats_.reliableReplicationPackets; else ++stats_.unreliableReplicationPackets;
+            auto& batch = message.reliable ? reliableBatch : unreliableBatch;
+            const auto channel = message.reliable ? WireChannel::Reliable : WireChannel::Unreliable;
+            batch.push_back(message);
+            if (!FitsWireBatch(channel, batch)) {
+                const auto overflow = batch.back();
+                batch.pop_back();
+                if (batch.empty()) throw std::runtime_error("single replication message exceeds MTU");
+                flushBatch(channel, batch);
+                batch.push_back(overflow);
+                if (!FitsWireBatch(channel, batch)) throw std::runtime_error("single replication message exceeds MTU");
+            }
         }
+
+        flushBatch(WireChannel::Reliable, reliableBatch);
+        flushBatch(WireChannel::Unreliable, unreliableBatch);
     }
 
     std::uint64_t ServerSessionManager::ReplicateInterestedClients(NetworkTransport& transport, const RuntimeEntityRegistry& registry)
@@ -275,7 +316,7 @@ namespace SkyrimMP::Server
         const auto decoded = DecodeInterest(encoded, offset);
         EnsureConsumed(encoded, offset);
         if (!decoded.location.hasCell || decoded.location.cell.localId != 0x1234 || decoded.transform.x != 1.0f) throw std::runtime_error("session interest self-test round-trip failed");
-        std::cout << "[SESSION] handshake=true protocolValidation=true loadOrderValidation=true maxPlayers=true heartbeat=true disconnect=true replication=true interest=true\n";
+        std::cout << "[SESSION] handshake=true protocolValidation=true loadOrderValidation=true maxPlayers=true heartbeat=true disconnect=true replication=true interest=true batching=true\n";
         std::cout << "[SESSION-SELFTEST] hello=true welcome=true authenticated=true heartbeat=true replication=true disconnect=true interest=true\n";
     }
 }
