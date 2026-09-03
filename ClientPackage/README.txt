@@ -8,17 +8,24 @@ Package channel: re-0.1-runtime-probe / controlled remote-player proxy test.
 Requirements
 ------------
 - Windows x64
-- Skyrim Special Edition
+- Skyrim Special Edition or Anniversary Edition
 - SKSE64 compatible with the installed Skyrim runtime
 - The same required game/master content as the test server
 - Access to the SkyrimMP server over UDP port 10578 for multiplayer
 
-Install
--------
-1. Extract this package somewhere outside the Skyrim folder.
-2. Run Install-Client.ps1.
-3. Enter the Skyrim Special Edition installation folder when asked.
-4. After installation, use "SkyrimMP Launcher.cmd" to start Skyrim.
+Recommended install
+-------------------
+1. Download the SkyrimMP-Setup artifact from the matching successful GitHub Actions run.
+2. Extract the artifact ZIP and run SkyrimMP-Setup.exe.
+3. The installer places SkyrimMP under your local Windows profile and creates Start Menu shortcuts.
+4. Optionally select the desktop-shortcut task during setup.
+5. Launch SkyrimMP Launcher.
+6. On first run, choose your own Skyrim SE/AE installation folder.
+7. Enter the server IPv4 address or hostname and UDP port.
+
+Portable package
+----------------
+The SkyrimMultiplayer-Client artifact remains available for development/testing. Extract it outside the Skyrim folder and run SkyrimMPLauncher.exe directly.
 
 Launcher modes
 --------------
@@ -54,4 +61,8 @@ Current multiplayer capacity
 The default server limit is 64 players. Each client can materialize up to 63
 remote-player proxies and excludes its own authoritative player entity.
 
-Do not redistribute Bethesda game assets, SKSE, Creation content, or third-party mods with this package. This package contains only the SkyrimMultiplayer test DLL and our helper/launcher scripts.
+Uninstall
+---------
+Use Windows Settings > Apps > Installed apps > SkyrimMP > Uninstall. The installer does not delete Skyrim saves.
+
+Do not redistribute Bethesda game assets, SKSE, Creation content, or third-party mods with this package. This package contains only SkyrimMP-owned binaries, launcher files, documentation, and hashes.
