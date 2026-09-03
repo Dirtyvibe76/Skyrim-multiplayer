@@ -1,5 +1,6 @@
 #include "GameplayPayloadImporter.h"
 #include "TypedGameplayDatabase.h"
+#include "WorldReferenceDatabase.h"
 
 #include <zlib.h>
 
@@ -221,11 +222,14 @@ namespace SkyrimMP::Server
                 " parsed=" + std::to_string(summary.parsedRecords));
         }
 
-        // Materialize the first authoritative typed database. This independently re-reads
-        // and validates the winning NPC_/WEAP/ARMO/AMMO/CONT/LVLI payloads so typed
-        // interpretation cannot silently diverge from the generic payload pass.
+        // Independently materialize and validate typed authoritative gameplay definitions.
         const auto typed = BuildTypedGameplayDatabase(a_database, a_stack);
         (void)typed;
+
+        // Materialize authoritative placed-world references. REFR/ACHR NAME targets are
+        // canonicalized against the winning-record database and ACHR bases must resolve to NPC_.
+        const auto world = BuildWorldReferenceDatabase(a_database, a_stack);
+        (void)world;
 
         return summary;
     }
