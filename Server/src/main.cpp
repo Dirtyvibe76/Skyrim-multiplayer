@@ -1,5 +1,6 @@
 #include "BethesdaPlugin.h"
 #include "BethesdaRecordScanner.h"
+#include "CanonicalRecordDatabase.h"
 #include "FormIdResolver.h"
 #include "PluginStack.h"
 
@@ -368,6 +369,9 @@ int main(int argc, char** argv)
             const auto summary = SkyrimMP::Server::ScanBethesdaRecords(entry, pluginStack, formNamespaces);
             std::cout << "[RECORDS] plugin=" << summary.pluginName
                       << " parsed=" << summary.recordCount
+                      << " groups=" << summary.groupCount
+                      << " structural=" << (static_cast<std::uint64_t>(summary.recordCount) + summary.groupCount)
+                      << " HEDR=" << entry.header.recordCount
                       << " canonicalResolved=" << summary.canonicalResolved
                       << " canonicalUnresolved=" << summary.canonicalUnresolved
                       << " types=" << summary.typeCounts.size() << '\n';
@@ -383,8 +387,15 @@ int main(int argc, char** argv)
             }
         }
 
+        std::cout << "[DB] building canonical winning-record database across " << pluginStack.size() << " plugins\n";
+        const auto recordDatabase = SkyrimMP::Server::BuildCanonicalRecordDatabase(pluginStack, formNamespaces);
+        std::cout << "[DB] scanned=" << recordDatabase.scannedRecords
+                  << " winners=" << recordDatabase.winningRecords
+                  << " overrides=" << recordDatabase.overrideCount
+                  << " typeMismatchOverrides=" << recordDatabase.typeMismatchOverrides << '\n';
+
         std::cout << "[MODS] manifest=" << fs::absolute(config.manifestPath).string() << '\n';
-        std::cout << "[PASS] server mod-host manifest + canonical FormID record scan complete\n";
+        std::cout << "[PASS] server canonical record database + winning overrides complete\n";
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "[FATAL] " << ex.what() << '\n';
