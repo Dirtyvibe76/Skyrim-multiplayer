@@ -1,6 +1,7 @@
 #include "ReplicationProtocol.h"
 #include "WireProtocol.h"
 #include "NetworkTransport.h"
+#include "SessionProtocol.h"
 
 #include <algorithm>
 #include <cmath>
@@ -224,5 +225,6 @@ namespace SkyrimMP::Server
 
         RunWireProtocolSelfTest();
         RunNetworkTransportSelfTest();
+        RunSessionProtocolSelfTest();
     }
 }
