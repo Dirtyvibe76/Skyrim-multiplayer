@@ -382,7 +382,7 @@ namespace SkyrimMP
 
             std::unordered_set<std::uint32_t> currentRelevant;
             std::uint32_t nearestRelevant = 0;
-            float nearestDistanceSquared = std::numeric_limits<float>::max();
+            float nearestDistanceSquared = (std::numeric_limits<float>::max)();
 
             for (const auto& [runtimeFormId, baseFormId] : g_knownActors) {
                 if (runtimeFormId == playerState.formId) {
