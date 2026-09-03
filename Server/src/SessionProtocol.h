@@ -17,7 +17,9 @@ namespace SkyrimMP::Server
         Reject = 3,
         Heartbeat = 4,
         Disconnect = 5,
-        Interest = 6
+        Interest = 6,
+        BootstrapRequest = 7,
+        WorldBootstrap = 8
     };
 
     enum class SessionRejectReason : std::uint8_t
@@ -40,6 +42,8 @@ namespace SkyrimMP::Server
         bool hasInterest{};
         NetworkEntityId playerEntityId{};
         bool hasPlayerEntity{};
+        CanonicalRecordKey bootstrapAnchor;
+        bool hasBootstrapAnchor{};
         std::unordered_map<std::uint32_t, std::vector<ReplicationMessage>> reliableReplicationByPacket;
     };
 
@@ -57,6 +61,8 @@ namespace SkyrimMP::Server
         std::uint64_t unreliableReplicationPackets{};
         std::uint64_t reliableReplicationAcks{};
         std::uint64_t reliableReplicationMessagesAcked{};
+        std::uint64_t bootstrapRequests{};
+        std::uint64_t bootstrapAssignments{};
         std::uint64_t playerEntitiesSpawned{};
         std::uint64_t playerStateRequests{};
         std::uint64_t playerStateApplied{};
