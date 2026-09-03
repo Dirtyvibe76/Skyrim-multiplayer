@@ -1,3 +1,5 @@
+#include "BethesdaPlugin.h"
+
 #include <windows.h>
 #include <bcrypt.h>
 
@@ -9,6 +11,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -33,6 +36,7 @@ namespace
         std::uintmax_t size{};
         std::string sha256;
         bool plugin{};
+        std::optional<SkyrimMP::Server::BethesdaPluginHeader> pluginHeader;
     };
 
     std::string Trim(std::string value)
@@ -205,6 +209,9 @@ namespace
             file.size = entry.file_size();
             file.sha256 = Sha256File(entry.path());
             file.plugin = IsPlugin(entry.path());
+            if (file.plugin) {
+                file.pluginHeader = SkyrimMP::Server::ParseBethesdaPluginHeader(entry.path());
+            }
             files.push_back(std::move(file));
         }
 
@@ -234,7 +241,7 @@ namespace
         }
 
         out << "{\n";
-        out << "  \"schema\": 1,\n";
+        out << "  \"schema\": 2,\n";
         out << "  \"serverName\": \"" << JsonEscape(config.name) << "\",\n";
         out << "  \"fileCount\": " << files.size() << ",\n";
         out << "  \"pluginCount\": " << pluginCount << ",\n";
@@ -245,7 +252,22 @@ namespace
             out << "    {\"path\":\"" << JsonEscape(file.relativePath)
                 << "\",\"size\":" << file.size
                 << ",\"sha256\":\"" << file.sha256
-                << "\",\"plugin\":" << (file.plugin ? "true" : "false") << "}";
+                << "\",\"plugin\":" << (file.plugin ? "true" : "false");
+
+            if (file.pluginHeader) {
+                out << ",\"headerVersion\":" << file.pluginHeader->headerVersion
+                    << ",\"recordCount\":" << file.pluginHeader->recordCount
+                    << ",\"nextObjectId\":" << file.pluginHeader->nextObjectId
+                    << ",\"recordFlags\":" << file.pluginHeader->recordFlags
+                    << ",\"masters\":[";
+                for (std::size_t masterIndex = 0; masterIndex < file.pluginHeader->masters.size(); ++masterIndex) {
+                    if (masterIndex != 0) out << ',';
+                    out << '"' << JsonEscape(file.pluginHeader->masters[masterIndex]) << '"';
+                }
+                out << ']';
+            }
+
+            out << '}';
             if (i + 1 != files.size()) out << ',';
             out << '\n';
         }
@@ -270,8 +292,23 @@ int main(int argc, char** argv)
 
         const auto pluginCount = std::count_if(files.begin(), files.end(), [](const auto& file) { return file.plugin; });
         std::cout << "[MODS] files=" << files.size() << " plugins=" << pluginCount << '\n';
+
+        for (const auto& file : files) {
+            if (!file.pluginHeader) {
+                continue;
+            }
+
+            std::cout << "[PLUGIN] " << file.relativePath
+                      << " masters=" << file.pluginHeader->masters.size()
+                      << " records=" << file.pluginHeader->recordCount
+                      << " version=" << file.pluginHeader->headerVersion << '\n';
+            for (const auto& master : file.pluginHeader->masters) {
+                std::cout << "         master=" << master << '\n';
+            }
+        }
+
         std::cout << "[MODS] manifest=" << fs::absolute(config.manifestPath).string() << '\n';
-        std::cout << "[PASS] server mod-host manifest bootstrap complete\n";
+        std::cout << "[PASS] server mod-host manifest + TES4 header import complete\n";
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "[FATAL] " << ex.what() << '\n';
