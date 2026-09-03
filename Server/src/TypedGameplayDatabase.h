@@ -84,6 +84,10 @@ namespace SkyrimMP::Server
         std::uint64_t canonicalReferences{};
         std::uint64_t nullReferences{};
         std::uint64_t unresolvedReferences{};
+        std::uint64_t targetReferencesValidated{};
+        std::uint64_t missingTargetReferences{};
+        std::uint64_t targetTypeChecks{};
+        std::uint64_t targetTypeMismatches{};
     };
 
     TypedGameplayDatabase BuildTypedGameplayDatabase(
