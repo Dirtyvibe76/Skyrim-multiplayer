@@ -8,6 +8,7 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace SkyrimMP::Server
 {
@@ -115,9 +116,7 @@ namespace SkyrimMP::Server
                 if (offset + size > data.size()) throw std::runtime_error("typed gameplay subrecord exceeds payload bounds");
                 const char* p = data.data() + offset;
 
-                if (type == "EDID" && out.editorId.empty()) {
-                    out.editorId = TrimZeroTerminated(std::string(p, size));
-                }
+                if (type == "EDID" && out.editorId.empty()) out.editorId = TrimZeroTerminated(std::string(p, size));
 
                 if (recordType == "NPC_") {
                     if (type == "ACBS" && size >= 4) out.actorFlags = ReadValue<std::uint32_t>(p, size, 0);
@@ -148,11 +147,7 @@ namespace SkyrimMP::Server
                     if (type == "LVLD" && size >= 1) out.chanceNone = static_cast<std::uint8_t>(p[0]);
                     else if (type == "LVLF" && size >= 1) out.leveledFlags = static_cast<std::uint8_t>(p[0]);
                     else if (type == "LVLO" && size >= 12) {
-                        out.leveled.push_back({
-                            ReadValue<std::int16_t>(p, size, 0),
-                            ReadValue<std::uint32_t>(p, size, 4),
-                            ReadValue<std::int16_t>(p, size, 8)
-                        });
+                        out.leveled.push_back({ ReadValue<std::int16_t>(p, size, 0), ReadValue<std::uint32_t>(p, size, 4), ReadValue<std::int16_t>(p, size, 8) });
                     }
                 }
                 offset += size;
@@ -166,28 +161,32 @@ namespace SkyrimMP::Server
                    type == "AMMO" || type == "CONT" || type == "LVLI";
         }
 
+        bool IsInventoryItemType(const std::string& type)
+        {
+            static const std::unordered_set<std::string> kInventoryTypes{
+                "WEAP", "ARMO", "AMMO", "BOOK", "INGR", "ALCH", "MISC",
+                "SLGM", "KEYM", "SCRL", "LIGH", "LVLI"
+            };
+            return kInventoryTypes.contains(type);
+        }
+
         const WinningRecord& ValidateTarget(
             const CanonicalFormReference& reference,
             const CanonicalRecordDatabase& canonicalDatabase,
             const WinningRecord& sourceRecord,
             const char* field,
             const char* expectedType,
+            bool requireInventoryItem,
             TypedGameplayDatabase& typedDatabase)
         {
-            const CanonicalRecordKey key{
-                reference.kind,
-                reference.namespaceIndex,
-                reference.localId
-            };
+            const CanonicalRecordKey key{ reference.kind, reference.namespaceIndex, reference.localId };
             const auto target = canonicalDatabase.winners.find(key);
             if (target == canonicalDatabase.winners.end()) {
                 ++typedDatabase.missingTargetReferences;
                 std::ostringstream message;
                 message << "canonical typed reference target missing in " << sourceRecord.sourcePlugin
-                        << " record=" << sourceRecord.type
-                        << " field=" << field
-                        << " target=" << FormNamespaceKindName(reference.kind)
-                        << ':' << reference.namespaceIndex
+                        << " record=" << sourceRecord.type << " field=" << field
+                        << " target=" << FormNamespaceKindName(reference.kind) << ':' << reference.namespaceIndex
                         << ":0x" << std::hex << std::uppercase << reference.localId;
                 throw std::runtime_error(message.str());
             }
@@ -199,12 +198,24 @@ namespace SkyrimMP::Server
                     ++typedDatabase.targetTypeMismatches;
                     std::ostringstream message;
                     message << "canonical typed reference target type mismatch in " << sourceRecord.sourcePlugin
-                            << " record=" << sourceRecord.type
-                            << " field=" << field
-                            << " expected=" << expectedType
+                            << " record=" << sourceRecord.type << " field=" << field
+                            << " expected=" << expectedType << " actual=" << target->second.type
+                            << " target=" << FormNamespaceKindName(reference.kind) << ':' << reference.namespaceIndex
+                            << ":0x" << std::hex << std::uppercase << reference.localId
+                            << " targetPlugin=" << target->second.sourcePlugin;
+                    throw std::runtime_error(message.str());
+                }
+            }
+
+            if (requireInventoryItem) {
+                ++typedDatabase.itemClassChecks;
+                if (!IsInventoryItemType(target->second.type)) {
+                    ++typedDatabase.itemClassMismatches;
+                    std::ostringstream message;
+                    message << "canonical inventory reference target class mismatch in " << sourceRecord.sourcePlugin
+                            << " record=" << sourceRecord.type << " field=" << field
                             << " actual=" << target->second.type
-                            << " target=" << FormNamespaceKindName(reference.kind)
-                            << ':' << reference.namespaceIndex
+                            << " target=" << FormNamespaceKindName(reference.kind) << ':' << reference.namespaceIndex
                             << ":0x" << std::hex << std::uppercase << reference.localId
                             << " targetPlugin=" << target->second.sourcePlugin;
                     throw std::runtime_error(message.str());
@@ -222,6 +233,7 @@ namespace SkyrimMP::Server
             const WinningRecord& record,
             const char* field,
             const char* expectedType,
+            bool requireInventoryItem,
             TypedGameplayDatabase& database)
         {
             auto resolved = ResolvePluginFormReference(rawFormId, sourcePlugin, stack, namespaces);
@@ -233,14 +245,12 @@ namespace SkyrimMP::Server
                 ++database.unresolvedReferences;
                 std::ostringstream message;
                 message << "unresolved typed FormID reference in " << record.sourcePlugin
-                        << " record=" << record.type
-                        << " field=" << field
-                        << " raw=0x" << std::hex << std::uppercase
-                        << std::setw(8) << std::setfill('0') << rawFormId;
+                        << " record=" << record.type << " field=" << field
+                        << " raw=0x" << std::hex << std::uppercase << std::setw(8) << std::setfill('0') << rawFormId;
                 throw std::runtime_error(message.str());
             }
             ++database.canonicalReferences;
-            ValidateTarget(resolved, canonicalDatabase, record, field, expectedType, database);
+            ValidateTarget(resolved, canonicalDatabase, record, field, expectedType, requireInventoryItem, database);
             return resolved;
         }
     }
@@ -277,7 +287,7 @@ namespace SkyrimMP::Server
                     typed.actorFlags = parsed.actorFlags;
                     typed.inventory.reserve(parsed.items.size());
                     for (const auto& item : parsed.items) {
-                        typed.inventory.push_back({ ResolveReference(item.rawFormId, a_stack[stackIndex], a_stack, namespaces, a_database, record, "NPC_.CNTO", nullptr, result), item.count });
+                        typed.inventory.push_back({ ResolveReference(item.rawFormId, a_stack[stackIndex], a_stack, namespaces, a_database, record, "NPC_.CNTO", nullptr, true, result), item.count });
                     }
                     result.inventoryEntries += typed.inventory.size();
                     result.npcs.push_back(std::move(typed));
@@ -298,7 +308,7 @@ namespace SkyrimMP::Server
                 } else if (record.type == "AMMO") {
                     AmmoRecord typed;
                     static_cast<TypedRecordBase&>(typed) = base;
-                    typed.projectile = ResolveReference(parsed.projectile, a_stack[stackIndex], a_stack, namespaces, a_database, record, "AMMO.DATA.projectile", "PROJ", result);
+                    typed.projectile = ResolveReference(parsed.projectile, a_stack[stackIndex], a_stack, namespaces, a_database, record, "AMMO.DATA.projectile", "PROJ", false, result);
                     typed.flags = parsed.ammoFlags;
                     typed.damage = parsed.ammoDamage;
                     typed.value = parsed.ammoValue;
@@ -308,7 +318,7 @@ namespace SkyrimMP::Server
                     static_cast<TypedRecordBase&>(typed) = base;
                     typed.items.reserve(parsed.items.size());
                     for (const auto& item : parsed.items) {
-                        typed.items.push_back({ ResolveReference(item.rawFormId, a_stack[stackIndex], a_stack, namespaces, a_database, record, "CONT.CNTO", nullptr, result), item.count });
+                        typed.items.push_back({ ResolveReference(item.rawFormId, a_stack[stackIndex], a_stack, namespaces, a_database, record, "CONT.CNTO", nullptr, true, result), item.count });
                     }
                     result.inventoryEntries += typed.items.size();
                     result.containers.push_back(std::move(typed));
@@ -319,7 +329,7 @@ namespace SkyrimMP::Server
                     typed.flags = parsed.leveledFlags;
                     typed.entries.reserve(parsed.leveled.size());
                     for (const auto& entry : parsed.leveled) {
-                        typed.entries.push_back({ entry.level, ResolveReference(entry.rawFormId, a_stack[stackIndex], a_stack, namespaces, a_database, record, "LVLI.LVLO", nullptr, result), entry.count });
+                        typed.entries.push_back({ entry.level, ResolveReference(entry.rawFormId, a_stack[stackIndex], a_stack, namespaces, a_database, record, "LVLI.LVLO", nullptr, true, result), entry.count });
                     }
                     result.leveledEntries += typed.entries.size();
                     result.leveledItems.push_back(std::move(typed));
@@ -332,11 +342,15 @@ namespace SkyrimMP::Server
         if (materialized != result.parsedRecords || result.parsedRecords != expectedTypedRecords) {
             throw std::runtime_error("typed gameplay database record-count invariant failed");
         }
-        if (result.unresolvedReferences != 0 || result.missingTargetReferences != 0 || result.targetTypeMismatches != 0) {
-            throw std::runtime_error("typed gameplay canonical-reference target invariant failed");
+        if (result.unresolvedReferences != 0 || result.missingTargetReferences != 0 ||
+            result.targetTypeMismatches != 0 || result.itemClassMismatches != 0) {
+            throw std::runtime_error("typed gameplay canonical-reference semantic invariant failed");
         }
         if (result.targetReferencesValidated != result.canonicalReferences) {
             throw std::runtime_error("typed gameplay target-validation count invariant failed");
+        }
+        if (result.itemClassChecks != result.inventoryEntries + result.leveledEntries) {
+            throw std::runtime_error("typed gameplay item-class validation count invariant failed");
         }
 
         std::cout << "[TYPED] records=" << result.parsedRecords
@@ -355,7 +369,9 @@ namespace SkyrimMP::Server
                   << " targetsValidated=" << result.targetReferencesValidated
                   << " missingTargets=" << result.missingTargetReferences
                   << " typeChecks=" << result.targetTypeChecks
-                  << " typeMismatches=" << result.targetTypeMismatches << '\n';
+                  << " typeMismatches=" << result.targetTypeMismatches
+                  << " itemClassChecks=" << result.itemClassChecks
+                  << " itemClassMismatches=" << result.itemClassMismatches << '\n';
 
         if (!result.weapons.empty()) {
             const auto& r = result.weapons.front();
@@ -378,9 +394,7 @@ namespace SkyrimMP::Server
                           << ':' << r.projectile.namespaceIndex
                           << ":0x" << std::hex << std::uppercase << r.projectile.localId
                           << std::dec << std::nouppercase;
-                if (target != a_database.winners.end()) {
-                    std::cout << " targetType=" << target->second.type;
-                }
+                if (target != a_database.winners.end()) std::cout << " targetType=" << target->second.type;
             }
             std::cout << '\n';
         }
