@@ -10,6 +10,7 @@
 #include <optional>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 namespace SkyrimMP
@@ -28,6 +29,27 @@ namespace SkyrimMP
         enum class PacketKind : std::uint8_t { Data = 1, Ack = 2, Control = 3 };
         enum class Channel : std::uint8_t { Unreliable = 0, Reliable = 1 };
         enum class ControlKind : std::uint8_t { Hello = 1, Welcome = 2, Reject = 3, Heartbeat = 4, Disconnect = 5, Interest = 6 };
+        enum class ReplicationKind : std::uint8_t { Spawn = 0, Delta = 1, Despawn = 2 };
+
+        struct CanonicalKey
+        {
+            bool light{};
+            std::uint32_t namespaceIndex{};
+            std::uint32_t localId{};
+        };
+
+        struct ClientReplica
+        {
+            std::uint8_t entityKind{};
+            std::uint64_t revision{};
+            Vec3 position{};
+            Vec3 rotation{};
+            CanonicalKey cell{};
+            CanonicalKey world{};
+            bool exterior{};
+            bool hasCell{};
+            bool hasWorld{};
+        };
 
         std::atomic_bool g_running{ false };
         std::atomic_bool g_authenticated{ false };
@@ -59,12 +81,21 @@ namespace SkyrimMP
             return static_cast<T>(value);
         }
 
-        struct CanonicalKey
+        float ReadFloat(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
         {
-            bool light{};
-            std::uint32_t namespaceIndex{};
-            std::uint32_t localId{};
-        };
+            return std::bit_cast<float>(Read<std::uint32_t>(bytes, offset));
+        }
+
+        CanonicalKey ReadKey(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
+        {
+            CanonicalKey key;
+            const auto kind = Read<std::uint8_t>(bytes, offset);
+            if (kind > 1) throw std::runtime_error("client canonical key kind invalid");
+            key.light = kind == 1;
+            key.namespaceIndex = Read<std::uint32_t>(bytes, offset);
+            key.localId = Read<std::uint32_t>(bytes, offset);
+            return key;
+        }
 
         bool RuntimeFormToCanonical(std::uint32_t formId, CanonicalKey& out)
         {
@@ -100,9 +131,7 @@ namespace SkyrimMP
             Append(out, ackSequence);
             Append(out, static_cast<std::uint16_t>(0));
             Append(out, static_cast<std::uint16_t>(kind == PacketKind::Control ? control.size() : 0));
-            if (kind == PacketKind::Control) {
-                out.insert(out.end(), control.begin(), control.end());
-            }
+            if (kind == PacketKind::Control) out.insert(out.end(), control.begin(), control.end());
             if (out.size() > kMaxDatagram) throw std::runtime_error("client packet exceeds max datagram");
             return out;
         }
@@ -161,6 +190,61 @@ namespace SkyrimMP
             if (sent != static_cast<int>(bytes.size())) throw std::runtime_error("client UDP send failed");
         }
 
+        void DecodeReplicationMessages(
+            const std::vector<std::uint8_t>& bytes,
+            std::size_t& offset,
+            std::uint16_t messageCount,
+            std::unordered_map<std::uint64_t, ClientReplica>& replicas,
+            std::uint64_t& spawns,
+            std::uint64_t& deltas,
+            std::uint64_t& despawns)
+        {
+            for (std::uint16_t i = 0; i < messageCount; ++i) {
+                const auto kindRaw = Read<std::uint8_t>(bytes, offset);
+                const auto reliable = Read<std::uint8_t>(bytes, offset);
+                (void)Read<std::uint16_t>(bytes, offset);
+                if (kindRaw > static_cast<std::uint8_t>(ReplicationKind::Despawn) || reliable > 1) {
+                    throw std::runtime_error("invalid replication message header");
+                }
+                const auto kind = static_cast<ReplicationKind>(kindRaw);
+                const auto id = Read<std::uint64_t>(bytes, offset);
+                const auto revision = Read<std::uint64_t>(bytes, offset);
+
+                if (kind == ReplicationKind::Despawn) {
+                    replicas.erase(id);
+                    ++despawns;
+                    continue;
+                }
+
+                const auto snapshotId = Read<std::uint64_t>(bytes, offset);
+                const auto entityKind = Read<std::uint8_t>(bytes, offset);
+                if (entityKind > 2) throw std::runtime_error("invalid replicated entity kind");
+                const auto flags = Read<std::uint8_t>(bytes, offset);
+                (void)Read<std::uint16_t>(bytes, offset);
+                const auto snapshotRevision = Read<std::uint64_t>(bytes, offset);
+                if (snapshotId != id || snapshotRevision != revision) throw std::runtime_error("replication envelope/snapshot mismatch");
+
+                ClientReplica replica;
+                replica.entityKind = entityKind;
+                replica.revision = revision;
+                replica.position = { ReadFloat(bytes, offset), ReadFloat(bytes, offset), ReadFloat(bytes, offset) };
+                replica.rotation = { ReadFloat(bytes, offset), ReadFloat(bytes, offset), ReadFloat(bytes, offset) };
+                replica.cell = ReadKey(bytes, offset);
+                replica.world = ReadKey(bytes, offset);
+                (void)ReadKey(bytes, offset); // sourceRecord; retained by server identity layer for now
+                replica.exterior = (flags & 0x02) != 0;
+                replica.hasCell = (flags & 0x04) != 0;
+                replica.hasWorld = (flags & 0x08) != 0;
+
+                const auto existing = replicas.find(id);
+                if (existing == replicas.end() || revision >= existing->second.revision) {
+                    replicas.insert_or_assign(id, replica);
+                }
+                if (kind == ReplicationKind::Spawn) ++spawns;
+                else ++deltas;
+            }
+        }
+
         void NetworkThread(std::stop_token stop)
         {
             WSADATA data{};
@@ -193,14 +277,17 @@ namespace SkyrimMP
             auto lastInterest = std::chrono::steady_clock::time_point{};
             std::uint64_t dataPackets = 0;
             std::uint64_t replicationMessages = 0;
+            std::uint64_t spawns = 0;
+            std::uint64_t deltas = 0;
+            std::uint64_t despawns = 0;
+            std::unordered_map<std::uint64_t, ClientReplica> replicas;
 
             logs::info("[NET-CLIENT] worker started server=127.0.0.1:{} protocol={} revision={}", kServerPort, kReplicationProtocolVersion, kLoadOrderRevision);
 
             while (!stop.stop_requested() && g_running.load(std::memory_order_relaxed)) {
                 const auto now = std::chrono::steady_clock::now();
                 if (sessionId == 0 && (lastHello.time_since_epoch().count() == 0 || now - lastHello >= 1s)) {
-                    const auto packet = MakePacket(PacketKind::Control, Channel::Reliable, nextSequence++, 0, EncodeHello(nonce));
-                    SendDatagram(socketValue, server, packet);
+                    SendDatagram(socketValue, server, MakePacket(PacketKind::Control, Channel::Reliable, nextSequence++, 0, EncodeHello(nonce)));
                     lastHello = now;
                 }
 
@@ -256,7 +343,7 @@ namespace SkyrimMP
                         }
 
                         if (kind == PacketKind::Control) {
-                            if (controlSize == 0 || offset + controlSize != bytes.size()) throw std::runtime_error("bad control payload");
+                            if (messageCount != 0 || controlSize == 0 || offset + controlSize != bytes.size()) throw std::runtime_error("bad control payload");
                             const auto controlKind = static_cast<ControlKind>(Read<std::uint8_t>(bytes, offset));
                             if (controlKind == ControlKind::Welcome) {
                                 const auto protocol = Read<std::uint16_t>(bytes, offset);
@@ -274,11 +361,20 @@ namespace SkyrimMP
                                 logs::error("[NET-CLIENT] server rejected connection reason={}", reason);
                             }
                         } else if (kind == PacketKind::Data) {
+                            if (controlSize != 0) throw std::runtime_error("data packet has control payload");
+                            DecodeReplicationMessages(bytes, offset, messageCount, replicas, spawns, deltas, despawns);
+                            if (offset != bytes.size()) throw std::runtime_error("data packet trailing bytes");
                             ++dataPackets;
                             replicationMessages += messageCount;
-                            if ((dataPackets % 100) == 1) {
-                                logs::info("[NET-CLIENT] replication received packets={} messages={} latestPacketMessages={}", dataPackets, replicationMessages, messageCount);
+                            if ((dataPackets % 25) == 1) {
+                                logs::info(
+                                    "[NET-CLIENT] replication packets={} messages={} active={} spawn={} delta={} despawn={} latestPacketMessages={}",
+                                    dataPackets, replicationMessages, replicas.size(), spawns, deltas, despawns, messageCount);
                             }
+                        } else if (kind == PacketKind::Ack) {
+                            if (messageCount != 0 || controlSize != 0 || offset != bytes.size()) throw std::runtime_error("bad ACK packet");
+                        } else {
+                            throw std::runtime_error("invalid packet kind");
                         }
                     } catch (const std::exception& e) {
                         logs::warn("[NET-CLIENT] dropped malformed packet: {}", e.what());
@@ -291,7 +387,9 @@ namespace SkyrimMP
             g_authenticated.store(false, std::memory_order_relaxed);
             closesocket(socketValue);
             WSACleanup();
-            logs::info("[NET-CLIENT] worker stopped dataPackets={} replicationMessages={}", dataPackets, replicationMessages);
+            logs::info(
+                "[NET-CLIENT] worker stopped packets={} messages={} active={} spawn={} delta={} despawn={}",
+                dataPackets, replicationMessages, replicas.size(), spawns, deltas, despawns);
         }
     }
 
