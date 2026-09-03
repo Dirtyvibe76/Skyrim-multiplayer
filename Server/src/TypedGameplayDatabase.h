@@ -88,6 +88,5 @@ namespace SkyrimMP::Server
 
     TypedGameplayDatabase BuildTypedGameplayDatabase(
         const CanonicalRecordDatabase& a_database,
-        const std::vector<PluginStackEntry>& a_stack,
-        const std::vector<PluginNamespace>& a_namespaces);
+        const std::vector<PluginStackEntry>& a_stack);
 }
