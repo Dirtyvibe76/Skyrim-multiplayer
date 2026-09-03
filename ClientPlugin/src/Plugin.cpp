@@ -1,5 +1,6 @@
 #include "pch.h"
 
+#include "ClientNetwork.h"
 #include "MainThreadHook.h"
 #include "ObjectLoadProbe.h"
 
@@ -7,6 +8,7 @@ namespace
 {
     bool g_hookInstalled = false;
     bool g_objectLoadProbeInstalled = false;
+    bool g_networkStarted = false;
 
     void MessageHandler(SKSE::MessagingInterface::Message* a_message)
     {
@@ -16,7 +18,7 @@ namespace
 
         switch (a_message->type) {
         case SKSE::MessagingInterface::kDataLoaded:
-            logs::info("[RE-0.7c] Skyrim data loaded");
+            logs::info("[RE-0.8] Skyrim data loaded");
 
             if (!g_hookInstalled) {
                 SkyrimMP::MainThreadHook::Install();
@@ -26,15 +28,21 @@ namespace
             if (!g_objectLoadProbeInstalled) {
                 g_objectLoadProbeInstalled = SkyrimMP::ObjectLoadProbe::Install();
             }
+
+            if (!g_networkStarted) {
+                SkyrimMP::ClientNetwork::Start();
+                g_networkStarted = true;
+                logs::info("[RE-0.8] UDP multiplayer client worker started");
+            }
             break;
 
         case SKSE::MessagingInterface::kPostLoadGame:
-            logs::info("[RE-0.7c] save loaded");
+            logs::info("[RE-0.8] save loaded");
             SkyrimMP::MainThreadHook::ResetActorCache();
             break;
 
         case SKSE::MessagingInterface::kNewGame:
-            logs::info("[RE-0.7c] new game");
+            logs::info("[RE-0.8] new game");
             SkyrimMP::MainThreadHook::ResetActorCache();
             break;
 
@@ -48,7 +56,7 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 {
     SKSE::Init(a_skse);
 
-    logs::info("Skyrim Multiplayer RE-0.7c loaded");
+    logs::info("Skyrim Multiplayer RE-0.8 loaded");
 
     const auto runtime = REL::Module::get().version();
 
@@ -62,7 +70,7 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
     auto* messaging = SKSE::GetMessagingInterface();
 
     if (!messaging || !messaging->RegisterListener(MessageHandler)) {
-        logs::critical("[RE-0.7c] failed to register SKSE messaging listener");
+        logs::critical("[RE-0.8] failed to register SKSE messaging listener");
         return false;
     }
 
