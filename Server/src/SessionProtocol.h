@@ -16,7 +16,8 @@ namespace SkyrimMP::Server
         Welcome = 2,
         Reject = 3,
         Heartbeat = 4,
-        Disconnect = 5
+        Disconnect = 5,
+        Interest = 6
     };
 
     enum class SessionRejectReason : std::uint8_t
@@ -35,6 +36,8 @@ namespace SkyrimMP::Server
         std::uint64_t clientNonce{};
         std::chrono::steady_clock::time_point lastHeartbeat{};
         ClientReplicationState replication;
+        ClientInterestSubscription interest;
+        bool hasInterest{};
     };
 
     struct SessionProtocolStats
@@ -44,6 +47,7 @@ namespace SkyrimMP::Server
         std::uint64_t rejected{};
         std::uint64_t heartbeats{};
         std::uint64_t disconnects{};
+        std::uint64_t interestUpdates{};
         std::uint64_t replicationFrames{};
         std::uint64_t reliableReplicationPackets{};
         std::uint64_t unreliableReplicationPackets{};
@@ -60,6 +64,9 @@ namespace SkyrimMP::Server
             NetworkTransport& a_transport,
             const NetworkEndpoint& a_endpoint,
             const ReplicationFrame& a_frame);
+        std::uint64_t ReplicateInterestedClients(
+            NetworkTransport& a_transport,
+            const RuntimeEntityRegistry& a_registry);
 
         bool IsAuthenticated(const NetworkEndpoint& a_endpoint) const;
         std::size_t SessionCount() const noexcept;
@@ -81,6 +88,9 @@ namespace SkyrimMP::Server
         std::uint64_t a_clientNonce);
     std::vector<std::uint8_t> EncodeSessionHeartbeat(std::uint64_t a_sessionId);
     std::vector<std::uint8_t> EncodeSessionDisconnect(std::uint64_t a_sessionId);
+    std::vector<std::uint8_t> EncodeSessionInterest(
+        std::uint64_t a_sessionId,
+        const ClientInterestSubscription& a_interest);
 
     void RunSessionProtocolSelfTest();
 }
