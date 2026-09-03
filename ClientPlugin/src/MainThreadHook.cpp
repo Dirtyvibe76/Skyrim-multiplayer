@@ -21,16 +21,26 @@ namespace SkyrimMP
         constexpr float kRotationThreshold = 0.05f;
         constexpr float kPi = 3.14159265358979323846f;
         constexpr float kTwoPi = 2.0f * kPi;
-        constexpr float kWriteProbePitchOffset = 0.05f;
-        constexpr auto kWriteProbeDelay = 5s;
+
+        constexpr auto kStreamArmDelay = 5s;
+        constexpr auto kStreamCadence = 100ms;
+        constexpr auto kStreamDuration = 10s;
+        constexpr float kStreamRadius = 120.0f;
+        constexpr float kStreamPitchAmplitude = 0.15f;
+        constexpr float kStreamYawSweep = kTwoPi;
 
         std::unordered_map<std::uint32_t, std::uint32_t> g_knownActors;
         std::unordered_set<std::uint32_t> g_relevantActors;
         std::unordered_map<std::uint32_t, ActorState> g_lastRelevantState;
 
-        bool g_writeProbeComplete = false;
-        std::uint32_t g_writeProbeCandidate = 0;
-        std::chrono::steady_clock::time_point g_writeProbeCandidateSince{};
+        bool g_streamComplete = false;
+        bool g_streamActive = false;
+        std::uint32_t g_streamCandidate = 0;
+        std::chrono::steady_clock::time_point g_streamCandidateSince{};
+        std::chrono::steady_clock::time_point g_streamStarted{};
+        std::chrono::steady_clock::time_point g_streamLastApplied{};
+        ActorState g_streamOriginal{};
+        std::uint32_t g_streamTick = 0;
 
         ActorState ReadActorState(RE::Actor* a_actor, std::uint32_t a_baseFormId)
         {
@@ -111,13 +121,23 @@ namespace SkyrimMP
 
         float ClampPitch(float a_pitch)
         {
-            if (a_pitch < -kPi * 0.5f) {
-                return -kPi * 0.5f;
+            const float limit = kPi * 0.5f;
+            if (a_pitch < -limit) {
+                return -limit;
             }
-            if (a_pitch > kPi * 0.5f) {
-                return kPi * 0.5f;
+            if (a_pitch > limit) {
+                return limit;
             }
             return a_pitch;
+        }
+
+        float NormalizeAngle(float a_angle)
+        {
+            float normalized = std::fmod(a_angle, kTwoPi);
+            if (normalized < 0.0f) {
+                normalized += kTwoPi;
+            }
+            return normalized;
         }
 
         void LogSpawn(const ActorState& a_state)
@@ -137,102 +157,217 @@ namespace SkyrimMP
                 a_state.rotation.z);
         }
 
-        void ResetWriteProbeCandidate()
+        void ResetStreamCandidate()
         {
-            g_writeProbeCandidate = 0;
-            g_writeProbeCandidateSince = {};
-        }
-
-        void ConsiderWriteProbeCandidate(std::uint32_t a_runtimeFormId)
-        {
-            if (g_writeProbeComplete || a_runtimeFormId == 0) {
-                return;
-            }
-
-            if (g_writeProbeCandidate != a_runtimeFormId) {
-                g_writeProbeCandidate = a_runtimeFormId;
-                g_writeProbeCandidateSince = std::chrono::steady_clock::now();
-                logs::info("[REMOTE PITCH PROBE] candidate form={:08X}; waiting 5 seconds", a_runtimeFormId);
+            if (!g_streamActive) {
+                g_streamCandidate = 0;
+                g_streamCandidateSince = {};
             }
         }
 
-        void RunControlledPitchWriteProbe()
+        void ConsiderStreamCandidate(std::uint32_t a_runtimeFormId)
         {
-            if (g_writeProbeComplete ||
-                g_writeProbeCandidate == 0 ||
-                g_writeProbeCandidateSince.time_since_epoch().count() == 0 ||
-                std::chrono::steady_clock::now() - g_writeProbeCandidateSince < kWriteProbeDelay) {
+            if (g_streamComplete || g_streamActive || a_runtimeFormId == 0) {
                 return;
             }
 
-            if (!g_relevantActors.contains(g_writeProbeCandidate)) {
-                ResetWriteProbeCandidate();
+            if (g_streamCandidate != a_runtimeFormId) {
+                g_streamCandidate = a_runtimeFormId;
+                g_streamCandidateSince = std::chrono::steady_clock::now();
+                logs::info(
+                    "[REMOTE STREAM PROBE] candidate form={:08X}; waiting 5 seconds before 10 Hz / 10 second transform stream",
+                    a_runtimeFormId);
+            }
+        }
+
+        void AbortActiveStream(const char* a_reason)
+        {
+            if (!g_streamActive) {
+                ResetStreamCandidate();
                 return;
             }
 
-            const auto knownIt = g_knownActors.find(g_writeProbeCandidate);
-            if (knownIt == g_knownActors.end()) {
-                ResetWriteProbeCandidate();
+            logs::warn(
+                "[REMOTE STREAM ABORT] form={:08X} reason={}",
+                g_streamCandidate,
+                a_reason);
+
+            g_streamActive = false;
+            g_streamComplete = true;
+            g_streamCandidate = 0;
+            g_streamCandidateSince = {};
+            g_streamStarted = {};
+            g_streamLastApplied = {};
+            g_streamOriginal = {};
+            g_streamTick = 0;
+        }
+
+        void RestoreStreamActor(RE::Actor* a_actor)
+        {
+            if (!a_actor || g_streamOriginal.runtimeFormId == 0) {
                 return;
             }
 
-            auto* form = RE::TESForm::LookupByID(g_writeProbeCandidate);
-            if (!form) {
-                ResetWriteProbeCandidate();
-                return;
-            }
+            const RE::NiPoint3 originalPosition{
+                g_streamOriginal.position.x,
+                g_streamOriginal.position.y,
+                g_streamOriginal.position.z
+            };
+            a_actor->SetPosition(originalPosition, true);
+            a_actor->data.angle.x = g_streamOriginal.rotation.x;
+            a_actor->data.angle.y = g_streamOriginal.rotation.y;
+            a_actor->data.angle.z = g_streamOriginal.rotation.z;
+            a_actor->Update3DPosition(true);
 
-            auto* actor = form->As<RE::Actor>();
-            if (!actor || !actor->Get3D()) {
-                ResetWriteProbeCandidate();
-                return;
-            }
-
-            const auto before = ReadActorState(actor, knownIt->second);
-            if (before.runtimeFormId == 0 || before.cellFormId == 0) {
-                ResetWriteProbeCandidate();
-                return;
-            }
-
-            const float requestedX = ClampPitch(before.rotation.x + kWriteProbePitchOffset);
-
+            const auto restoredPosition = a_actor->GetPosition();
+            const auto restoredAngle = a_actor->GetAngle();
             logs::info(
-                "[REMOTE PITCH BEGIN] form={:08X} before=({:.3f},{:.3f},{:.3f}) requestedX={:.3f}",
-                before.runtimeFormId,
-                before.rotation.x,
-                before.rotation.y,
-                before.rotation.z,
-                requestedX);
-
-            // RE-0.5c showed local player vertical look is represented by GetAngle().x.
-            // Probe the matching inbound path on one re-resolved relevant actor.
-            // Change pitch only, verify readback, then restore immediately.
-            actor->data.angle.x = requestedX;
-            actor->Update3DPosition(true);
-
-            const auto appliedAngle = actor->GetAngle();
-            logs::info(
-                "[REMOTE PITCH APPLIED] form={:08X} observed=({:.3f},{:.3f},{:.3f})",
-                before.runtimeFormId,
-                appliedAngle.x,
-                appliedAngle.y,
-                appliedAngle.z);
-
-            actor->data.angle.x = before.rotation.x;
-            actor->data.angle.y = before.rotation.y;
-            actor->data.angle.z = before.rotation.z;
-            actor->Update3DPosition(true);
-
-            const auto restoredAngle = actor->GetAngle();
-            logs::info(
-                "[REMOTE PITCH RESTORED] form={:08X} observed=({:.3f},{:.3f},{:.3f})",
-                before.runtimeFormId,
+                "[REMOTE STREAM RESTORED] form={:08X} pos=({:.2f},{:.2f},{:.2f}) rot=({:.3f},{:.3f},{:.3f}) ticks={}",
+                g_streamOriginal.runtimeFormId,
+                restoredPosition.x,
+                restoredPosition.y,
+                restoredPosition.z,
                 restoredAngle.x,
                 restoredAngle.y,
-                restoredAngle.z);
+                restoredAngle.z,
+                g_streamTick);
+        }
 
-            g_writeProbeComplete = true;
-            ResetWriteProbeCandidate();
+        void RunSyntheticRemoteTransformStream()
+        {
+            if (g_streamComplete || g_streamCandidate == 0) {
+                return;
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+
+            if (!g_streamActive) {
+                if (g_streamCandidateSince.time_since_epoch().count() == 0 ||
+                    now - g_streamCandidateSince < kStreamArmDelay) {
+                    return;
+                }
+
+                if (!g_relevantActors.contains(g_streamCandidate)) {
+                    ResetStreamCandidate();
+                    return;
+                }
+
+                const auto knownIt = g_knownActors.find(g_streamCandidate);
+                if (knownIt == g_knownActors.end()) {
+                    ResetStreamCandidate();
+                    return;
+                }
+
+                auto* form = RE::TESForm::LookupByID(g_streamCandidate);
+                auto* actor = form ? form->As<RE::Actor>() : nullptr;
+                if (!actor || !actor->Get3D()) {
+                    ResetStreamCandidate();
+                    return;
+                }
+
+                g_streamOriginal = ReadActorState(actor, knownIt->second);
+                if (g_streamOriginal.runtimeFormId == 0 || g_streamOriginal.cellFormId == 0) {
+                    ResetStreamCandidate();
+                    return;
+                }
+
+                g_streamActive = true;
+                g_streamStarted = now;
+                g_streamLastApplied = {};
+                g_streamTick = 0;
+
+                logs::info(
+                    "[REMOTE STREAM BEGIN] form={:08X} originPos=({:.2f},{:.2f},{:.2f}) originRot=({:.3f},{:.3f},{:.3f}) cadence=100ms duration=10s radius=120",
+                    g_streamOriginal.runtimeFormId,
+                    g_streamOriginal.position.x,
+                    g_streamOriginal.position.y,
+                    g_streamOriginal.position.z,
+                    g_streamOriginal.rotation.x,
+                    g_streamOriginal.rotation.y,
+                    g_streamOriginal.rotation.z);
+            }
+
+            if (now - g_streamStarted >= kStreamDuration) {
+                auto* form = RE::TESForm::LookupByID(g_streamCandidate);
+                auto* actor = form ? form->As<RE::Actor>() : nullptr;
+                if (actor && actor->Get3D()) {
+                    RestoreStreamActor(actor);
+                    logs::info("[REMOTE STREAM COMPLETE] form={:08X}", g_streamCandidate);
+                } else {
+                    logs::warn(
+                        "[REMOTE STREAM COMPLETE] form={:08X} actor unavailable at restore",
+                        g_streamCandidate);
+                }
+
+                g_streamActive = false;
+                g_streamComplete = true;
+                g_streamCandidate = 0;
+                g_streamCandidateSince = {};
+                g_streamStarted = {};
+                g_streamLastApplied = {};
+                g_streamOriginal = {};
+                g_streamTick = 0;
+                return;
+            }
+
+            if (g_streamLastApplied.time_since_epoch().count() != 0 &&
+                now - g_streamLastApplied < kStreamCadence) {
+                return;
+            }
+
+            if (!g_relevantActors.contains(g_streamCandidate)) {
+                AbortActiveStream("actor left relevance set");
+                return;
+            }
+
+            auto* form = RE::TESForm::LookupByID(g_streamCandidate);
+            auto* actor = form ? form->As<RE::Actor>() : nullptr;
+            if (!actor || !actor->Get3D()) {
+                AbortActiveStream("actor unavailable");
+                return;
+            }
+
+            const float elapsedSeconds =
+                std::chrono::duration<float>(now - g_streamStarted).count();
+            const float phase = std::clamp(elapsedSeconds / 10.0f, 0.0f, 1.0f);
+            const float orbit = phase * kTwoPi;
+
+            const RE::NiPoint3 requestedPosition{
+                g_streamOriginal.position.x + std::cos(orbit) * kStreamRadius,
+                g_streamOriginal.position.y + std::sin(orbit) * kStreamRadius,
+                g_streamOriginal.position.z
+            };
+            const float requestedPitch = ClampPitch(
+                g_streamOriginal.rotation.x + std::sin(orbit * 2.0f) * kStreamPitchAmplitude);
+            const float requestedYaw = NormalizeAngle(
+                g_streamOriginal.rotation.z + phase * kStreamYawSweep);
+
+            actor->SetPosition(requestedPosition, true);
+            actor->data.angle.x = requestedPitch;
+            actor->data.angle.y = g_streamOriginal.rotation.y;
+            actor->data.angle.z = requestedYaw;
+            actor->Update3DPosition(true);
+
+            const auto observedPosition = actor->GetPosition();
+            const auto observedAngle = actor->GetAngle();
+            ++g_streamTick;
+            g_streamLastApplied = now;
+
+            logs::info(
+                "[REMOTE STREAM TICK] form={:08X} tick={} phase={:.3f} reqPos=({:.2f},{:.2f},{:.2f}) obsPos=({:.2f},{:.2f},{:.2f}) reqRot=({:.3f},{:.3f}) obsRot=({:.3f},{:.3f})",
+                g_streamCandidate,
+                g_streamTick,
+                phase,
+                requestedPosition.x,
+                requestedPosition.y,
+                requestedPosition.z,
+                observedPosition.x,
+                observedPosition.y,
+                observedPosition.z,
+                requestedPitch,
+                requestedYaw,
+                observedAngle.x,
+                observedAngle.z);
         }
 
         void SampleRelevantActors()
@@ -346,12 +481,12 @@ namespace SkyrimMP
                     playerState.worldspaceFormId);
             }
 
-            if (!g_writeProbeComplete) {
-                if (g_writeProbeCandidate == 0 || !g_relevantActors.contains(g_writeProbeCandidate)) {
+            if (!g_streamComplete && !g_streamActive) {
+                if (g_streamCandidate == 0 || !g_relevantActors.contains(g_streamCandidate)) {
                     if (firstRelevant != 0) {
-                        ConsiderWriteProbeCandidate(firstRelevant);
+                        ConsiderStreamCandidate(firstRelevant);
                     } else {
-                        ResetWriteProbeCandidate();
+                        ResetStreamCandidate();
                     }
                 }
             }
@@ -363,7 +498,7 @@ namespace SkyrimMP
         REL::Relocation<std::uintptr_t> playerVTable{ RE::VTABLE_PlayerCharacter[0] };
         originalUpdate = playerVTable.write_vfunc(0xAD, Update);
 
-        logs::info("[RE-0.5d] PlayerCharacter::Update hook installed; controlled inbound pitch write probe armed");
+        logs::info("[RE-0.6a] PlayerCharacter::Update hook installed; sustained synthetic remote transform stream armed");
     }
 
     void MainThreadHook::ResetActorCache()
@@ -371,9 +506,15 @@ namespace SkyrimMP
         g_knownActors.clear();
         g_relevantActors.clear();
         g_lastRelevantState.clear();
-        g_writeProbeComplete = false;
-        ResetWriteProbeCandidate();
-        logs::info("[RE-0.5d] actor caches reset; controlled pitch write probe re-armed");
+        g_streamComplete = false;
+        g_streamActive = false;
+        g_streamCandidate = 0;
+        g_streamCandidateSince = {};
+        g_streamStarted = {};
+        g_streamLastApplied = {};
+        g_streamOriginal = {};
+        g_streamTick = 0;
+        logs::info("[RE-0.6a] actor caches reset; sustained transform stream re-armed");
     }
 
     void MainThreadHook::Update(RE::Actor* a_actor, float a_delta)
@@ -385,7 +526,7 @@ namespace SkyrimMP
         static bool firstUpdateLogged = false;
 
         if (!firstUpdateLogged) {
-            logs::info("[RE-0.5d] PlayerCharacter::Update hook executing");
+            logs::info("[RE-0.6a] PlayerCharacter::Update hook executing");
             firstUpdateLogged = true;
         }
 
@@ -405,8 +546,12 @@ namespace SkyrimMP
                 const bool wasRelevant = g_relevantActors.erase(event.formId) > 0;
                 g_lastRelevantState.erase(event.formId);
 
-                if (event.formId == g_writeProbeCandidate) {
-                    ResetWriteProbeCandidate();
+                if (event.formId == g_streamCandidate) {
+                    if (g_streamActive) {
+                        AbortActiveStream("actor unloaded");
+                    } else {
+                        ResetStreamCandidate();
+                    }
                 }
 
                 const auto it = g_knownActors.find(event.formId);
@@ -455,8 +600,9 @@ namespace SkyrimMP
             now - lastActorSample >= 500ms) {
 
             SampleRelevantActors();
-            RunControlledPitchWriteProbe();
             lastActorSample = now;
         }
+
+        RunSyntheticRemoteTransformStream();
     }
 }
