@@ -25,6 +25,8 @@ namespace SkyrimMP::Server
         std::string type;
         std::uint32_t rawFormId{};
         std::uint32_t recordFlags{};
+        std::uint64_t dataOffset{};
+        std::uint32_t dataSize{};
         CanonicalFormId canonical;
     };
 
