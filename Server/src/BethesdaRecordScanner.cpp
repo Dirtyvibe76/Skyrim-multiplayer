@@ -117,6 +117,7 @@ namespace SkyrimMP::Server
                 }
 
                 const auto dataSize = ReadAt<std::uint32_t>(input, cursor + 4);
+                const auto recordFlags = ReadAt<std::uint32_t>(input, cursor + 8);
                 const auto rawFormId = ReadAt<std::uint32_t>(input, cursor + 12);
                 const std::uint64_t totalSize = 24ull + dataSize;
                 if (cursor + totalSize > end) {
@@ -129,6 +130,12 @@ namespace SkyrimMP::Server
                     const auto canonical = ResolveRawFormId(rawFormId, plugin, namespaces);
                     if (canonical.resolved) {
                         ++summary.canonicalResolved;
+                        summary.records.push_back(BethesdaRecordEntry{
+                            signature,
+                            rawFormId,
+                            recordFlags,
+                            canonical
+                        });
                         if (summary.samples.size() < sampleLimit) {
                             summary.samples.emplace_back(rawFormId, canonical);
                         }
