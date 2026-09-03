@@ -27,6 +27,7 @@ target("SkyrimMultiplayer")
         "Shared"
     )
 
+    add_syslinks("ws2_32")
     set_pcxxheader("ClientPlugin/src/pch.h")
 
 target("SkyrimMPServer")
