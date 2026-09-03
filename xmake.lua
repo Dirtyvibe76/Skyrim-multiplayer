@@ -7,6 +7,8 @@ set_warnings("allextra")
 
 add_rules("mode.debug", "mode.releasedbg")
 
+add_requires("zlib")
+
 target("SkyrimMultiplayer")
     add_rules("commonlibsse-ng.plugin", {
         name = "Skyrim Multiplayer",
@@ -30,4 +32,5 @@ target("SkyrimMultiplayer")
 target("SkyrimMPServer")
     set_kind("binary")
     add_files("Server/src/**.cpp")
+    add_packages("zlib")
     add_syslinks("bcrypt")
