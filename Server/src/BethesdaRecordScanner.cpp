@@ -53,6 +53,22 @@ namespace SkyrimMP::Server
             std::string pluginName;
         };
 
+        std::uint32_t NormalizeKnownVanillaHitme(
+            const PluginStackEntry& plugin,
+            const std::string& signature,
+            std::uint32_t rawFormId)
+        {
+            // Skyrim.esm contains one known malformed internal FormID (a "HITME"):
+            // iDaysToRespawnVendor [GMST:0023C00E] is stored internally as 0123C00E.
+            // Correct only this exact vanilla record; never generically strip owner bytes.
+            if (Lower(plugin.header.filename) == "skyrim.esm" &&
+                signature == "GMST" &&
+                rawFormId == 0x0123C00Eu) {
+                return 0x0023C00Eu;
+            }
+            return rawFormId;
+        }
+
         CanonicalFormId ResolveRawFormId(
             std::uint32_t rawFormId,
             const PluginStackEntry& plugin,
@@ -127,7 +143,8 @@ namespace SkyrimMP::Server
                 if (signature != "TES4") {
                     ++summary.recordCount;
                     ++summary.typeCounts[signature];
-                    const auto canonical = ResolveRawFormId(rawFormId, plugin, namespaces);
+                    const auto normalizedFormId = NormalizeKnownVanillaHitme(plugin, signature, rawFormId);
+                    const auto canonical = ResolveRawFormId(normalizedFormId, plugin, namespaces);
                     if (canonical.resolved) {
                         ++summary.canonicalResolved;
                         summary.records.push_back(BethesdaRecordEntry{
