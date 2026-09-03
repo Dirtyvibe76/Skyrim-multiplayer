@@ -1,0 +1,59 @@
+name: Build SkyrimMP Client Package
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - re-0.1-runtime-probe
+    paths:
+      - 'ClientPlugin/**'
+      - 'Shared/**'
+      - 'ClientPackage/**'
+      - 'External/**'
+      - 'xmake.lua'
+      - '.gitmodules'
+      - '.github/workflows/build-client-package.yml'
+
+jobs:
+  build-client:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Configure
+        shell: cmd
+        run: xmake f -m releasedbg -a x64 -y
+
+      - name: Build client DLL
+        shell: cmd
+        run: xmake build -vD SkyrimMultiplayer
+
+      - name: Stage client package
+        shell: powershell
+        run: |
+          $stage = Join-Path $PWD 'artifact\SkyrimMultiplayer-Client'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item 'build\windows\x64\releasedbg\SkyrimMultiplayer.dll' $stage
+          Copy-Item 'ClientPackage\Install-Client.ps1' $stage
+          Copy-Item 'ClientPackage\Connect-To-SkyrimMP.ps1' $stage
+          Copy-Item 'ClientPackage\README.txt' $stage
+          Get-FileHash (Join-Path $stage 'SkyrimMultiplayer.dll') -Algorithm SHA256 |
+            ForEach-Object { "SkyrimMultiplayer.dll SHA256=$($_.Hash)" } |
+            Set-Content (Join-Path $stage 'SHA256.txt')
+
+      - name: Upload downloadable client package
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyrimMultiplayer-Client
+          path: artifact/SkyrimMultiplayer-Client
+          if-no-files-found: error
+          retention-days: 30
