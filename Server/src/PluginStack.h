@@ -23,9 +23,18 @@ namespace SkyrimMP::Server
         BethesdaPluginHeader header;
     };
 
+    struct PluginLoadOrderInfo
+    {
+        bool explicitPlugins{};
+        bool explicitLoadOrder{};
+        std::vector<std::string> enabledHostedPlugins;
+        std::string revisionHash;
+    };
+
     std::vector<PluginStackEntry> ResolvePluginStack(
         const std::vector<std::filesystem::path>& a_hostedPlugins,
         const std::filesystem::path& a_gameDataPath);
 
+    const PluginLoadOrderInfo& GetLastPluginLoadOrderInfo();
     const char* PluginSourceName(PluginSource a_source);
 }
