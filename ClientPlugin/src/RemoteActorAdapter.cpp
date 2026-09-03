@@ -2,6 +2,7 @@
 
 #include "RemoteActorAdapter.h"
 #include "RemotePlayerProxyManager.h"
+#include "WorldBootstrapManager.h"
 
 #include <algorithm>
 #include <deque>
@@ -15,6 +16,7 @@ namespace SkyrimMP
     {
         constexpr std::size_t kMaxPendingEntities = 256;
         constexpr std::uint32_t kSelfTestFormId = 0xFFFFFFFEu;
+        constexpr std::uint32_t kServerProxySequenceBase = 0x40000000u;
 
         std::mutex g_queueMutex;
         std::deque<std::uint32_t> g_pendingOrder;
@@ -166,12 +168,18 @@ namespace SkyrimMP
     void RemoteActorAdapter::Enqueue(const RemoteTransform& a_transform)
     {
         if (a_transform.runtimeFormId == 0) return;
+
+        if (WorldBootstrapManager::HasApplied() && a_transform.sequence < kServerProxySequenceBase) {
+            return;
+        }
+
         std::scoped_lock lock(g_queueMutex);
         EnqueueLocked(a_transform, true);
     }
 
     std::size_t RemoteActorAdapter::ApplyPending(std::size_t a_budget)
     {
+        WorldBootstrapManager::ApplyPending();
         RemotePlayerProxyManager::ApplyPending(8);
 
         if (a_budget == 0) return 0;
