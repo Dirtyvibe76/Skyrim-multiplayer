@@ -52,26 +52,26 @@ namespace SkyrimMP::Server
                     record.canonical.localId
                 };
 
-                auto [it, inserted] = database.winners.try_emplace(key, WinningRecord{
-                    key,
-                    record.type,
-                    record.recordFlags,
-                    plugin.stackIndex,
-                    plugin.header.filename
-                });
+                auto makeWinner = [&]() {
+                    return WinningRecord{
+                        key,
+                        record.type,
+                        record.recordFlags,
+                        plugin.stackIndex,
+                        plugin.header.filename,
+                        record.dataOffset,
+                        record.dataSize
+                    };
+                };
+
+                auto [it, inserted] = database.winners.try_emplace(key, makeWinner());
 
                 if (!inserted) {
                     ++database.overrideCount;
                     if (it->second.type != record.type) {
                         ++database.typeMismatchOverrides;
                     }
-                    it->second = WinningRecord{
-                        key,
-                        record.type,
-                        record.recordFlags,
-                        plugin.stackIndex,
-                        plugin.header.filename
-                    };
+                    it->second = makeWinner();
                 }
             }
         }
