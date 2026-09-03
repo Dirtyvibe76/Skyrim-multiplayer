@@ -1,4 +1,5 @@
 #include "GameplayPayloadImporter.h"
+#include "TypedGameplayDatabase.h"
 
 #include <zlib.h>
 
@@ -219,6 +220,12 @@ namespace SkyrimMP::Server
                 "gameplay payload import incomplete: candidates=" + std::to_string(summary.candidateRecords) +
                 " parsed=" + std::to_string(summary.parsedRecords));
         }
+
+        // Materialize the first authoritative typed database. This independently re-reads
+        // and validates the winning NPC_/WEAP/ARMO/AMMO/CONT/LVLI payloads so typed
+        // interpretation cannot silently diverge from the generic payload pass.
+        const auto typed = BuildTypedGameplayDatabase(a_database, a_stack);
+        (void)typed;
 
         return summary;
     }
