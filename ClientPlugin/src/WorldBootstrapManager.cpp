@@ -77,7 +77,7 @@ namespace SkyrimMP
             bootstrap.position.x,
             bootstrap.position.y,
             bootstrap.position.z
-        });
+        }, true);
         player->data.angle.x = bootstrap.rotation.x;
         player->data.angle.y = bootstrap.rotation.y;
         player->data.angle.z = bootstrap.rotation.z;
