@@ -357,6 +357,12 @@ namespace SkyrimMP
                 position,
                 rotation
             });
+
+            {
+                std::scoped_lock lock(g_playerMutex);
+                g_hasPlayer = false;
+            }
+
             bootstrapReceived = true;
             g_authenticated.store(true, std::memory_order_release);
             logs::info(
@@ -427,7 +433,8 @@ namespace SkyrimMP
                             SendDatagram(socketValue, server, MakePacket(PacketKind::Control, Channel::Reliable, nextSequence++, 0, EncodeBootstrapRequest(sessionId)));
                             lastBootstrapRequest = now;
                         }
-                    } else if (lastInterest.time_since_epoch().count() == 0 || now - lastInterest >= 250ms) {
+                    } else if (WorldBootstrapManager::HasApplied() &&
+                               (lastInterest.time_since_epoch().count() == 0 || now - lastInterest >= 250ms)) {
                         PlayerState player{};
                         bool hasPlayer = false;
                         {
