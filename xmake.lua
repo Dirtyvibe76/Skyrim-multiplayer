@@ -26,3 +26,8 @@ target("SkyrimMultiplayer")
     )
 
     set_pcxxheader("ClientPlugin/src/pch.h")
+
+target("SkyrimMPServer")
+    set_kind("binary")
+    add_files("Server/src/**.cpp")
+    add_syslinks("bcrypt")
