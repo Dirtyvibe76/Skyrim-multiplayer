@@ -1,4 +1,5 @@
 #include "ReplicationProtocol.h"
+#include "WireProtocol.h"
 
 #include <algorithm>
 #include <cmath>
@@ -219,5 +220,7 @@ namespace SkyrimMP::Server
                   << " despawnFrame=" << despawnFrame.messages.size()
                   << " respawnFrame=" << respawnFrame.messages.size()
                   << " finalFrame=" << finalFrame.messages.size() << '\n';
+
+        RunWireProtocolSelfTest();
     }
 }
