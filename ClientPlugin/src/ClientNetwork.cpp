@@ -12,6 +12,7 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace SkyrimMP
@@ -232,6 +233,7 @@ namespace SkyrimMP
             std::size_t& offset,
             std::uint16_t messageCount,
             std::unordered_map<std::uint64_t, ClientReplica>& replicas,
+            std::unordered_set<std::uint64_t>& playerTombstones,
             std::uint64_t& spawns,
             std::uint64_t& deltas,
             std::uint64_t& despawns)
@@ -248,6 +250,7 @@ namespace SkyrimMP
                 const auto revision = Read<std::uint64_t>(bytes, offset);
 
                 if (kind == ReplicationKind::Despawn) {
+                    if ((id & (1ull << 63)) != 0) playerTombstones.insert(id);
                     const auto existing = replicas.find(id);
                     if (existing != replicas.end() && existing->second.entityKind == kRuntimeEntityKindPlayer) {
                         RemotePlayerProxyManager::EnqueueDespawn(id);
@@ -272,10 +275,19 @@ namespace SkyrimMP
                 replica.rotation = { ReadFloat(bytes, offset), ReadFloat(bytes, offset), ReadFloat(bytes, offset) };
                 replica.cell = ReadKey(bytes, offset);
                 replica.world = ReadKey(bytes, offset);
-                (void)ReadKey(bytes, offset); // sourceRecord; retained by server identity layer for now
+                (void)ReadKey(bytes, offset);
                 replica.exterior = (flags & 0x02) != 0;
                 replica.hasCell = (flags & 0x04) != 0;
                 replica.hasWorld = (flags & 0x08) != 0;
+
+                if (entityKind == kRuntimeEntityKindPlayer) {
+                    if (kind == ReplicationKind::Spawn) {
+                        playerTombstones.erase(id);
+                    } else if (kind == ReplicationKind::Delta && playerTombstones.contains(id)) {
+                        ++deltas;
+                        continue;
+                    }
+                }
 
                 const auto existing = replicas.find(id);
                 if (existing == replicas.end() || revision >= existing->second.revision) {
@@ -323,8 +335,9 @@ namespace SkyrimMP
             std::uint64_t deltas = 0;
             std::uint64_t despawns = 0;
             std::unordered_map<std::uint64_t, ClientReplica> replicas;
+            std::unordered_set<std::uint64_t> playerTombstones;
 
-            logs::info("[NET-CLIENT] worker started server=127.0.0.1:{} protocol={} revision={} remotePlayerProxy=controlled-one", kServerPort, kReplicationProtocolVersion, kLoadOrderRevision);
+            logs::info("[NET-CLIENT] worker started server=127.0.0.1:{} protocol={} revision={} remotePlayerProxy=controlled-one tombstones=true", kServerPort, kReplicationProtocolVersion, kLoadOrderRevision);
 
             while (!stop.stop_requested() && g_running.load(std::memory_order_relaxed)) {
                 const auto now = std::chrono::steady_clock::now();
@@ -404,14 +417,14 @@ namespace SkyrimMP
                             }
                         } else if (kind == PacketKind::Data) {
                             if (controlSize != 0) throw std::runtime_error("data packet has control payload");
-                            DecodeReplicationMessages(bytes, offset, messageCount, replicas, spawns, deltas, despawns);
+                            DecodeReplicationMessages(bytes, offset, messageCount, replicas, playerTombstones, spawns, deltas, despawns);
                             if (offset != bytes.size()) throw std::runtime_error("data packet trailing bytes");
                             ++dataPackets;
                             replicationMessages += messageCount;
                             if ((dataPackets % 25) == 1) {
                                 logs::info(
-                                    "[NET-CLIENT] replication packets={} messages={} active={} spawn={} delta={} despawn={} latestPacketMessages={}",
-                                    dataPackets, replicationMessages, replicas.size(), spawns, deltas, despawns, messageCount);
+                                    "[NET-CLIENT] replication packets={} messages={} active={} spawn={} delta={} despawn={} latestPacketMessages={} playerTombstones={}",
+                                    dataPackets, replicationMessages, replicas.size(), spawns, deltas, despawns, messageCount, playerTombstones.size());
                             }
                         } else if (kind == PacketKind::Ack) {
                             if (messageCount != 0 || controlSize != 0 || offset != bytes.size()) throw std::runtime_error("bad ACK packet");
@@ -434,8 +447,8 @@ namespace SkyrimMP
             closesocket(socketValue);
             WSACleanup();
             logs::info(
-                "[NET-CLIENT] worker stopped packets={} messages={} active={} spawn={} delta={} despawn={}",
-                dataPackets, replicationMessages, replicas.size(), spawns, deltas, despawns);
+                "[NET-CLIENT] worker stopped packets={} messages={} active={} spawn={} delta={} despawn={} playerTombstones={}",
+                dataPackets, replicationMessages, replicas.size(), spawns, deltas, despawns, playerTombstones.size());
         }
     }
 
