@@ -1,5 +1,6 @@
 #include "ReplicationProtocol.h"
 #include "WireProtocol.h"
+#include "NetworkTransport.h"
 
 #include <algorithm>
 #include <cmath>
@@ -222,5 +223,6 @@ namespace SkyrimMP::Server
                   << " finalFrame=" << finalFrame.messages.size() << '\n';
 
         RunWireProtocolSelfTest();
+        RunNetworkTransportSelfTest();
     }
 }
