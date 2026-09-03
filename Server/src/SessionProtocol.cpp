@@ -186,6 +186,25 @@ namespace SkyrimMP::Server
         ++stats_.rejected;
     }
 
+    void ServerSessionManager::ProcessAcknowledgements(NetworkTransport& transport)
+    {
+        for (const auto& acknowledgement : transport.DrainAcknowledgements()) {
+            const auto sessionIt = sessions_.find(acknowledgement.endpoint);
+            if (sessionIt == sessions_.end()) continue;
+
+            auto& session = sessionIt->second;
+            const auto packetIt = session.reliableReplicationByPacket.find(acknowledgement.sequence);
+            if (packetIt == session.reliableReplicationByPacket.end()) continue;
+
+            for (const auto& message : packetIt->second) {
+                CommitReliableReplicationAck(session.replication, message);
+                ++stats_.reliableReplicationMessagesAcked;
+            }
+            session.reliableReplicationByPacket.erase(packetIt);
+            ++stats_.reliableReplicationAcks;
+        }
+    }
+
     void ServerSessionManager::ProcessControlPackets(NetworkTransport& transport)
     {
         for (const auto& incoming : transport.DrainControlPackets()) {
@@ -251,15 +270,25 @@ namespace SkyrimMP::Server
 
     void ServerSessionManager::SendReplicationFrame(NetworkTransport& transport, const NetworkEndpoint& endpoint, const ReplicationFrame& frame)
     {
-        if (!IsAuthenticated(endpoint)) throw std::runtime_error("cannot replicate to unauthenticated endpoint");
+        const auto sessionIt = sessions_.find(endpoint);
+        if (sessionIt == sessions_.end()) throw std::runtime_error("cannot replicate to unauthenticated endpoint");
+        auto& session = sessionIt->second;
+
         ++stats_.replicationFrames;
         stats_.replicationMessages += frame.messages.size();
 
         auto flushBatch = [&](WireChannel channel, std::vector<ReplicationMessage>& batch) {
             if (batch.empty()) return;
-            transport.SendMessages(endpoint, channel, batch);
-            if (channel == WireChannel::Reliable) ++stats_.reliableReplicationPackets;
-            else ++stats_.unreliableReplicationPackets;
+            const auto sequence = transport.SendMessages(endpoint, channel, batch);
+            if (channel == WireChannel::Reliable) {
+                for (const auto& message : batch) MarkReliableReplicationPending(session.replication, message);
+                const auto [it, inserted] = session.reliableReplicationByPacket.emplace(sequence, batch);
+                (void)it;
+                if (!inserted) throw std::runtime_error("duplicate reliable replication packet sequence");
+                ++stats_.reliableReplicationPackets;
+            } else {
+                ++stats_.unreliableReplicationPackets;
+            }
             batch.clear();
         };
 
@@ -316,7 +345,7 @@ namespace SkyrimMP::Server
         const auto decoded = DecodeInterest(encoded, offset);
         EnsureConsumed(encoded, offset);
         if (!decoded.location.hasCell || decoded.location.cell.localId != 0x1234 || decoded.transform.x != 1.0f) throw std::runtime_error("session interest self-test round-trip failed");
-        std::cout << "[SESSION] handshake=true protocolValidation=true loadOrderValidation=true maxPlayers=true heartbeat=true disconnect=true replication=true interest=true batching=true\n";
+        std::cout << "[SESSION] handshake=true protocolValidation=true loadOrderValidation=true maxPlayers=true heartbeat=true disconnect=true replication=true interest=true batching=true ackTracking=true\n";
         std::cout << "[SESSION-SELFTEST] hello=true welcome=true authenticated=true heartbeat=true replication=true disconnect=true interest=true\n";
     }
 }
