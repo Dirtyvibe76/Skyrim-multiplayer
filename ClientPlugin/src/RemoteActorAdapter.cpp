@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "RemoteActorAdapter.h"
+#include "RemotePlayerProxyManager.h"
 
 #include <algorithm>
 #include <deque>
@@ -22,8 +23,6 @@ namespace SkyrimMP
 
         bool IsNewerSequence(std::uint32_t a_candidate, std::uint32_t a_reference)
         {
-            // RFC-style serial arithmetic for a wrapping 32-bit sequence space.
-            // Equal values are duplicates; a positive signed delta is newer.
             return static_cast<std::int32_t>(a_candidate - a_reference) > 0;
         }
 
@@ -40,9 +39,7 @@ namespace SkyrimMP
             constexpr float kTwoPi = 2.0f * kPi;
 
             float normalized = std::fmod(a_yaw, kTwoPi);
-            if (normalized < 0.0f) {
-                normalized += kTwoPi;
-            }
+            if (normalized < 0.0f) normalized += kTwoPi;
             return normalized;
         }
 
@@ -110,8 +107,6 @@ namespace SkyrimMP
 
         void RunBufferSelfTestLocked()
         {
-            // This uses a reserved, never-resolved synthetic FormID and exercises only
-            // POD buffering/sequence logic. No Skyrim object is dereferenced or written.
             g_pendingOrder.clear();
             g_pendingByEntity.clear();
             g_lastAppliedSequence.clear();
@@ -132,7 +127,6 @@ namespace SkyrimMP
                 pendingIt->second.position.x == 12.0f &&
                 g_pendingOrder.size() == 1;
 
-            // Simulate seq 12 having been applied, then verify applied-state stale rejection.
             g_pendingOrder.clear();
             g_pendingByEntity.clear();
             g_lastAppliedSequence.insert_or_assign(kSelfTestFormId, 12);
@@ -141,7 +135,6 @@ namespace SkyrimMP
             const RemoteTransform seq13{ kSelfTestFormId, 13, { 13.0f, 0.0f, 0.0f }, {} };
             const bool accepted13 = EnqueueLocked(seq13, false);
 
-            // Verify 32-bit wraparound: UINT32_MAX -> 0 is one newer sequence.
             g_pendingOrder.clear();
             g_pendingByEntity.clear();
             g_lastAppliedSequence.insert_or_assign(
@@ -151,15 +144,8 @@ namespace SkyrimMP
             const bool acceptedWrap0 = EnqueueLocked(seq0, false);
 
             const bool pass =
-                accepted10 &&
-                accepted12 &&
-                rejected11 &&
-                rejectedDuplicate12 &&
-                coalescedTo12 &&
-                rejectedApplied11 &&
-                rejectedApplied12 &&
-                accepted13 &&
-                acceptedWrap0;
+                accepted10 && accepted12 && rejected11 && rejectedDuplicate12 && coalescedTo12 &&
+                rejectedApplied11 && rejectedApplied12 && accepted13 && acceptedWrap0;
 
             logs::info(
                 "[REMOTE ADAPTER SELFTEST {}] coalesce={} pendingStale={} duplicate={} appliedStale={} newer={} wrap={}",
@@ -179,19 +165,16 @@ namespace SkyrimMP
 
     void RemoteActorAdapter::Enqueue(const RemoteTransform& a_transform)
     {
-        if (a_transform.runtimeFormId == 0) {
-            return;
-        }
-
+        if (a_transform.runtimeFormId == 0) return;
         std::scoped_lock lock(g_queueMutex);
         EnqueueLocked(a_transform, true);
     }
 
     std::size_t RemoteActorAdapter::ApplyPending(std::size_t a_budget)
     {
-        if (a_budget == 0) {
-            return 0;
-        }
+        RemotePlayerProxyManager::ApplyPending(8);
+
+        if (a_budget == 0) return 0;
 
         std::deque<RemoteTransform> batch;
         {
@@ -202,9 +185,7 @@ namespace SkyrimMP
                 g_pendingOrder.pop_front();
 
                 const auto pendingIt = g_pendingByEntity.find(runtimeFormId);
-                if (pendingIt == g_pendingByEntity.end()) {
-                    continue;
-                }
+                if (pendingIt == g_pendingByEntity.end()) continue;
 
                 batch.push_back(pendingIt->second);
                 g_pendingByEntity.erase(pendingIt);
@@ -291,11 +272,12 @@ namespace SkyrimMP
 
     void RemoteActorAdapter::Reset()
     {
+        RemotePlayerProxyManager::Reset();
         std::scoped_lock lock(g_queueMutex);
         RunBufferSelfTestLocked();
         g_pendingOrder.clear();
         g_pendingByEntity.clear();
         g_lastAppliedSequence.clear();
-        logs::info("[REMOTE ADAPTER] inbound latest-state buffer reset");
+        logs::info("[REMOTE ADAPTER] inbound latest-state buffer reset; remote-player proxy queue reset");
     }
 }
