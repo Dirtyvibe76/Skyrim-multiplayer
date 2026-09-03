@@ -2,6 +2,7 @@
 
 #include "ReplicationProtocol.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -35,5 +36,5 @@ namespace SkyrimMP::Server
     std::vector<std::uint8_t> SerializeWirePacket(const WirePacket& a_packet);
     WirePacket DeserializeWirePacket(const std::vector<std::uint8_t>& a_bytes);
 
-    void RunWireProtocolSelfTest(const ReplicationFrame& a_frame);
+    void RunWireProtocolSelfTest();
 }
