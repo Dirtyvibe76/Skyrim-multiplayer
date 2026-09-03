@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <deque>
+#include <limits>
 #include <mutex>
 #include <unordered_map>
 
@@ -12,6 +13,7 @@ namespace SkyrimMP
     namespace
     {
         constexpr std::size_t kMaxPendingEntities = 256;
+        constexpr std::uint32_t kSelfTestFormId = 0xFFFFFFFEu;
 
         std::mutex g_queueMutex;
         std::deque<std::uint32_t> g_pendingOrder;
@@ -43,6 +45,136 @@ namespace SkyrimMP
             }
             return normalized;
         }
+
+        bool EnqueueLocked(const RemoteTransform& a_transform, bool a_log)
+        {
+            if (const auto appliedIt = g_lastAppliedSequence.find(a_transform.runtimeFormId);
+                appliedIt != g_lastAppliedSequence.end() &&
+                !IsNewerSequence(a_transform.sequence, appliedIt->second)) {
+
+                if (a_log) {
+                    logs::info(
+                        "[REMOTE ADAPTER STALE] form={:08X} seq={} lastApplied={} reason=not newer than applied state",
+                        a_transform.runtimeFormId,
+                        a_transform.sequence,
+                        appliedIt->second);
+                }
+                return false;
+            }
+
+            if (const auto pendingIt = g_pendingByEntity.find(a_transform.runtimeFormId);
+                pendingIt != g_pendingByEntity.end()) {
+
+                if (!IsNewerSequence(a_transform.sequence, pendingIt->second.sequence)) {
+                    if (a_log) {
+                        logs::info(
+                            "[REMOTE ADAPTER STALE] form={:08X} seq={} pending={} reason=not newer than pending state",
+                            a_transform.runtimeFormId,
+                            a_transform.sequence,
+                            pendingIt->second.sequence);
+                    }
+                    return false;
+                }
+
+                if (a_log) {
+                    logs::info(
+                        "[REMOTE ADAPTER COALESCE] form={:08X} seq={}->{}",
+                        a_transform.runtimeFormId,
+                        pendingIt->second.sequence,
+                        a_transform.sequence);
+                }
+                pendingIt->second = a_transform;
+                return true;
+            }
+
+            if (g_pendingByEntity.size() >= kMaxPendingEntities) {
+                const auto droppedFormId = g_pendingOrder.front();
+                g_pendingOrder.pop_front();
+
+                const auto droppedIt = g_pendingByEntity.find(droppedFormId);
+                if (droppedIt != g_pendingByEntity.end()) {
+                    if (a_log) {
+                        logs::warn(
+                            "[REMOTE ADAPTER DROP] form={:08X} seq={} reason=pending entity capacity",
+                            droppedIt->second.runtimeFormId,
+                            droppedIt->second.sequence);
+                    }
+                    g_pendingByEntity.erase(droppedIt);
+                }
+            }
+
+            g_pendingOrder.push_back(a_transform.runtimeFormId);
+            g_pendingByEntity.insert_or_assign(a_transform.runtimeFormId, a_transform);
+            return true;
+        }
+
+        void RunBufferSelfTestLocked()
+        {
+            // This uses a reserved, never-resolved synthetic FormID and exercises only
+            // POD buffering/sequence logic. No Skyrim object is dereferenced or written.
+            g_pendingOrder.clear();
+            g_pendingByEntity.clear();
+            g_lastAppliedSequence.clear();
+
+            const RemoteTransform seq10{ kSelfTestFormId, 10, { 10.0f, 0.0f, 0.0f }, {} };
+            const RemoteTransform seq12{ kSelfTestFormId, 12, { 12.0f, 0.0f, 0.0f }, {} };
+            const RemoteTransform seq11{ kSelfTestFormId, 11, { 11.0f, 0.0f, 0.0f }, {} };
+
+            const bool accepted10 = EnqueueLocked(seq10, false);
+            const bool accepted12 = EnqueueLocked(seq12, false);
+            const bool rejected11 = !EnqueueLocked(seq11, false);
+            const bool rejectedDuplicate12 = !EnqueueLocked(seq12, false);
+
+            const auto pendingIt = g_pendingByEntity.find(kSelfTestFormId);
+            const bool coalescedTo12 =
+                pendingIt != g_pendingByEntity.end() &&
+                pendingIt->second.sequence == 12 &&
+                pendingIt->second.position.x == 12.0f &&
+                g_pendingOrder.size() == 1;
+
+            // Simulate seq 12 having been applied, then verify applied-state stale rejection.
+            g_pendingOrder.clear();
+            g_pendingByEntity.clear();
+            g_lastAppliedSequence.insert_or_assign(kSelfTestFormId, 12);
+            const bool rejectedApplied11 = !EnqueueLocked(seq11, false);
+            const bool rejectedApplied12 = !EnqueueLocked(seq12, false);
+            const RemoteTransform seq13{ kSelfTestFormId, 13, { 13.0f, 0.0f, 0.0f }, {} };
+            const bool accepted13 = EnqueueLocked(seq13, false);
+
+            // Verify 32-bit wraparound: UINT32_MAX -> 0 is one newer sequence.
+            g_pendingOrder.clear();
+            g_pendingByEntity.clear();
+            g_lastAppliedSequence.insert_or_assign(
+                kSelfTestFormId,
+                (std::numeric_limits<std::uint32_t>::max)());
+            const RemoteTransform seq0{ kSelfTestFormId, 0, { 0.0f, 0.0f, 0.0f }, {} };
+            const bool acceptedWrap0 = EnqueueLocked(seq0, false);
+
+            const bool pass =
+                accepted10 &&
+                accepted12 &&
+                rejected11 &&
+                rejectedDuplicate12 &&
+                coalescedTo12 &&
+                rejectedApplied11 &&
+                rejectedApplied12 &&
+                accepted13 &&
+                acceptedWrap0;
+
+            logs::info(
+                "[REMOTE ADAPTER SELFTEST {}] coalesce={} pendingStale={} duplicate={} appliedStale={} newer={} wrap={}",
+                pass ? "PASS" : "FAIL",
+                coalescedTo12,
+                rejected11,
+                rejectedDuplicate12,
+                rejectedApplied11 && rejectedApplied12,
+                accepted13,
+                acceptedWrap0);
+
+            g_pendingOrder.clear();
+            g_pendingByEntity.clear();
+            g_lastAppliedSequence.clear();
+        }
     }
 
     void RemoteActorAdapter::Enqueue(const RemoteTransform& a_transform)
@@ -52,56 +184,7 @@ namespace SkyrimMP
         }
 
         std::scoped_lock lock(g_queueMutex);
-
-        if (const auto appliedIt = g_lastAppliedSequence.find(a_transform.runtimeFormId);
-            appliedIt != g_lastAppliedSequence.end() &&
-            !IsNewerSequence(a_transform.sequence, appliedIt->second)) {
-
-            logs::info(
-                "[REMOTE ADAPTER STALE] form={:08X} seq={} lastApplied={} reason=not newer than applied state",
-                a_transform.runtimeFormId,
-                a_transform.sequence,
-                appliedIt->second);
-            return;
-        }
-
-        if (const auto pendingIt = g_pendingByEntity.find(a_transform.runtimeFormId);
-            pendingIt != g_pendingByEntity.end()) {
-
-            if (!IsNewerSequence(a_transform.sequence, pendingIt->second.sequence)) {
-                logs::info(
-                    "[REMOTE ADAPTER STALE] form={:08X} seq={} pending={} reason=not newer than pending state",
-                    a_transform.runtimeFormId,
-                    a_transform.sequence,
-                    pendingIt->second.sequence);
-                return;
-            }
-
-            logs::info(
-                "[REMOTE ADAPTER COALESCE] form={:08X} seq={}->{}",
-                a_transform.runtimeFormId,
-                pendingIt->second.sequence,
-                a_transform.sequence);
-            pendingIt->second = a_transform;
-            return;
-        }
-
-        if (g_pendingByEntity.size() >= kMaxPendingEntities) {
-            const auto droppedFormId = g_pendingOrder.front();
-            g_pendingOrder.pop_front();
-
-            const auto droppedIt = g_pendingByEntity.find(droppedFormId);
-            if (droppedIt != g_pendingByEntity.end()) {
-                logs::warn(
-                    "[REMOTE ADAPTER DROP] form={:08X} seq={} reason=pending entity capacity",
-                    droppedIt->second.runtimeFormId,
-                    droppedIt->second.sequence);
-                g_pendingByEntity.erase(droppedIt);
-            }
-        }
-
-        g_pendingOrder.push_back(a_transform.runtimeFormId);
-        g_pendingByEntity.insert_or_assign(a_transform.runtimeFormId, a_transform);
+        EnqueueLocked(a_transform, true);
     }
 
     std::size_t RemoteActorAdapter::ApplyPending(std::size_t a_budget)
@@ -209,6 +292,7 @@ namespace SkyrimMP
     void RemoteActorAdapter::Reset()
     {
         std::scoped_lock lock(g_queueMutex);
+        RunBufferSelfTestLocked();
         g_pendingOrder.clear();
         g_pendingByEntity.clear();
         g_lastAppliedSequence.clear();
