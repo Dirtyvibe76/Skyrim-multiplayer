@@ -1,10 +1,12 @@
 #include "pch.h"
 
 #include "MainThreadHook.h"
+#include "ObjectLoadProbe.h"
 
 namespace
 {
     bool g_hookInstalled = false;
+    bool g_objectLoadProbeInstalled = false;
 
     void MessageHandler(SKSE::MessagingInterface::Message* a_message)
     {
@@ -14,20 +16,24 @@ namespace
 
         switch (a_message->type) {
         case SKSE::MessagingInterface::kDataLoaded:
-            logs::info("[RE-0.4c] Skyrim data loaded");
+            logs::info("[RE-0.4d] Skyrim data loaded");
 
             if (!g_hookInstalled) {
                 SkyrimMP::MainThreadHook::Install();
                 g_hookInstalled = true;
             }
+
+            if (!g_objectLoadProbeInstalled) {
+                g_objectLoadProbeInstalled = SkyrimMP::ObjectLoadProbe::Install();
+            }
             break;
 
         case SKSE::MessagingInterface::kPostLoadGame:
-            logs::info("[RE-0.4c] save loaded");
+            logs::info("[RE-0.4d] save loaded");
             break;
 
         case SKSE::MessagingInterface::kNewGame:
-            logs::info("[RE-0.4c] new game");
+            logs::info("[RE-0.4d] new game");
             break;
 
         default:
@@ -40,7 +46,7 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 {
     SKSE::Init(a_skse);
 
-    logs::info("Skyrim Multiplayer RE-0.4c loaded");
+    logs::info("Skyrim Multiplayer RE-0.4d loaded");
 
     const auto runtime = REL::Module::get().version();
 
@@ -54,7 +60,7 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
     auto* messaging = SKSE::GetMessagingInterface();
 
     if (!messaging || !messaging->RegisterListener(MessageHandler)) {
-        logs::critical("[RE-0.4c] failed to register SKSE messaging listener");
+        logs::critical("[RE-0.4d] failed to register SKSE messaging listener");
         return false;
     }
 
