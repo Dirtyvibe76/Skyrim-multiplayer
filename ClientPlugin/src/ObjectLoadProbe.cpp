@@ -2,8 +2,17 @@
 
 #include "ObjectLoadProbe.h"
 
+#include <mutex>
+#include <utility>
+
 namespace SkyrimMP
 {
+    namespace
+    {
+        std::mutex g_pendingMutex;
+        std::vector<ObjectLoadEventRecord> g_pendingEvents;
+    }
+
     ObjectLoadProbe* ObjectLoadProbe::GetSingleton()
     {
         static ObjectLoadProbe singleton;
@@ -14,13 +23,22 @@ namespace SkyrimMP
     {
         auto* sourceHolder = RE::ScriptEventSourceHolder::GetSingleton();
         if (!sourceHolder) {
-            logs::critical("[RE-0.4d] ScriptEventSourceHolder unavailable");
+            logs::critical("[RE-0.4e] ScriptEventSourceHolder unavailable");
             return false;
         }
 
         sourceHolder->AddEventSink<RE::TESObjectLoadedEvent>(GetSingleton());
-        logs::info("[RE-0.4d] TESObjectLoadedEvent sink installed");
+        logs::info("[RE-0.4e] TESObjectLoadedEvent sink installed");
         return true;
+    }
+
+    std::vector<ObjectLoadEventRecord> ObjectLoadProbe::DrainPending()
+    {
+        std::scoped_lock lock(g_pendingMutex);
+
+        std::vector<ObjectLoadEventRecord> pending;
+        pending.swap(g_pendingEvents);
+        return pending;
     }
 
     RE::BSEventNotifyControl ObjectLoadProbe::ProcessEvent(
@@ -31,13 +49,15 @@ namespace SkyrimMP
             return RE::BSEventNotifyControl::kContinue;
         }
 
-        // Deliberately do not resolve or dereference the form here.
-        // This stage validates the engine's native load/unload event stream
-        // without touching ProcessLists during actor updates.
-        logs::info(
-            "[OBJECT {}] form={:08X}",
-            a_event->loaded ? "LOAD" : "UNLOAD",
-            a_event->formID);
+        // Event callbacks have been observed on multiple OS thread IDs.
+        // Copy only POD data here. Do not resolve or dereference Skyrim forms.
+        {
+            std::scoped_lock lock(g_pendingMutex);
+            g_pendingEvents.push_back(ObjectLoadEventRecord{
+                a_event->formID,
+                a_event->loaded
+            });
+        }
 
         return RE::BSEventNotifyControl::kContinue;
     }
