@@ -151,6 +151,8 @@ namespace SkyrimMP::Server
                             signature,
                             rawFormId,
                             recordFlags,
+                            cursor + 24,
+                            dataSize,
                             canonical
                         });
                         if (summary.samples.size() < sampleLimit) {
