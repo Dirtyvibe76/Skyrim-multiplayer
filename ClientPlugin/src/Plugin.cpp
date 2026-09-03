@@ -14,7 +14,7 @@ namespace
 
         switch (a_message->type) {
         case SKSE::MessagingInterface::kDataLoaded:
-            logs::info("[RE-0.4b] Skyrim data loaded");
+            logs::info("[RE-0.4c] Skyrim data loaded");
 
             if (!g_hookInstalled) {
                 SkyrimMP::MainThreadHook::Install();
@@ -23,11 +23,11 @@ namespace
             break;
 
         case SKSE::MessagingInterface::kPostLoadGame:
-            logs::info("[RE-0.4b] save loaded");
+            logs::info("[RE-0.4c] save loaded");
             break;
 
         case SKSE::MessagingInterface::kNewGame:
-            logs::info("[RE-0.4b] new game");
+            logs::info("[RE-0.4c] new game");
             break;
 
         default:
@@ -40,7 +40,7 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 {
     SKSE::Init(a_skse);
 
-    logs::info("Skyrim Multiplayer RE-0.4b loaded");
+    logs::info("Skyrim Multiplayer RE-0.4c loaded");
 
     const auto runtime = REL::Module::get().version();
 
@@ -54,7 +54,7 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
     auto* messaging = SKSE::GetMessagingInterface();
 
     if (!messaging || !messaging->RegisterListener(MessageHandler)) {
-        logs::critical("[RE-0.4b] failed to register SKSE messaging listener");
+        logs::critical("[RE-0.4c] failed to register SKSE messaging listener");
         return false;
     }
 
