@@ -2,6 +2,7 @@
 
 #include "MainThreadHook.h"
 #include "RuntimeProbe.h"
+#include "ObjectLoadProbe.h"
 
 namespace SkyrimMP
 {
@@ -10,7 +11,7 @@ namespace SkyrimMP
         REL::Relocation<std::uintptr_t> playerVTable{ RE::VTABLE_PlayerCharacter[0] };
         originalUpdate = playerVTable.write_vfunc(0xAD, Update);
 
-        logs::info("[RE-0.4c] PlayerCharacter::Update hook installed; actor traversal disabled for isolation");
+        logs::info("[RE-0.4e] PlayerCharacter::Update hook installed; actor traversal disabled");
     }
 
     void MainThreadHook::Update(RE::Actor* a_actor, float a_delta)
@@ -21,7 +22,7 @@ namespace SkyrimMP
         static bool firstUpdateLogged = false;
 
         if (!firstUpdateLogged) {
-            logs::info("[RE-0.4c] PlayerCharacter::Update hook executing");
+            logs::info("[RE-0.4e] PlayerCharacter::Update hook executing");
             firstUpdateLogged = true;
         }
 
@@ -32,6 +33,17 @@ namespace SkyrimMP
 
             RuntimeProbe::LogLocalPlayer();
             lastPlayerSample = now;
+        }
+
+        // Drain copied load/unload POD records here. This validates the
+        // cross-thread handoff without resolving or dereferencing forms yet.
+        const auto pending = ObjectLoadProbe::DrainPending();
+
+        for (const auto& event : pending) {
+            logs::info(
+                "[OBJECT HANDOFF {}] form={:08X}",
+                event.loaded ? "LOAD" : "UNLOAD",
+                event.formId);
         }
     }
 }
