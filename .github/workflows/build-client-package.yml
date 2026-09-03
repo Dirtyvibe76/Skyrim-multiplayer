@@ -45,6 +45,8 @@ jobs:
           Copy-Item 'build\windows\x64\releasedbg\SkyrimMultiplayer.dll' $stage
           Copy-Item 'ClientPackage\Install-Client.ps1' $stage
           Copy-Item 'ClientPackage\Connect-To-SkyrimMP.ps1' $stage
+          Copy-Item 'ClientPackage\SkyrimMP-Launcher.ps1' $stage
+          Copy-Item 'ClientPackage\SkyrimMP Launcher.cmd' $stage
           Copy-Item 'ClientPackage\README.txt' $stage
           Get-FileHash (Join-Path $stage 'SkyrimMultiplayer.dll') -Algorithm SHA256 |
             ForEach-Object { "SkyrimMultiplayer.dll SHA256=$($_.Hash)" } |
