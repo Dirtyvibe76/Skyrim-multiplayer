@@ -115,6 +115,9 @@ namespace SkyrimMP::Server
                           << " sessions=" << sessions.SessionCount()
                           << " interestUpdates=" << s.interestUpdates
                           << " replicationFrames=" << s.replicationFrames
+                          << " replicationMessages=" << s.replicationMessages
+                          << " reliablePackets=" << s.reliableReplicationPackets
+                          << " unreliablePackets=" << s.unreliableReplicationPackets
                           << " replicationPasses=" << replicationPasses
                           << " sent=" << t.datagramsSent
                           << " received=" << t.datagramsReceived
@@ -128,6 +131,9 @@ namespace SkyrimMP::Server
         SetConsoleCtrlHandler(ConsoleHandler, FALSE);
         std::cout << "[LIVE-STOP] ticks=" << ticks
                   << " sessions=" << sessions.SessionCount()
-                  << " replicationFrames=" << sessions.Stats().replicationFrames << '\n';
+                  << " replicationFrames=" << sessions.Stats().replicationFrames
+                  << " replicationMessages=" << sessions.Stats().replicationMessages
+                  << " reliablePackets=" << sessions.Stats().reliableReplicationPackets
+                  << " unreliablePackets=" << sessions.Stats().unreliableReplicationPackets << '\n';
     }
 }
