@@ -49,6 +49,7 @@ namespace SkyrimMP::Server
         std::uint64_t disconnects{};
         std::uint64_t interestUpdates{};
         std::uint64_t replicationFrames{};
+        std::uint64_t replicationMessages{};
         std::uint64_t reliableReplicationPackets{};
         std::uint64_t unreliableReplicationPackets{};
     };
