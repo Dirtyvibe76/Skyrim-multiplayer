@@ -6,12 +6,18 @@
 #include "ActorState.h"
 
 #include <unordered_map>
+#include <unordered_set>
 
 namespace SkyrimMP
 {
     namespace
     {
+        constexpr float kExteriorRelevanceRadius = 12000.0f;
+        constexpr float kExteriorRelevanceRadiusSquared =
+            kExteriorRelevanceRadius * kExteriorRelevanceRadius;
+
         std::unordered_map<std::uint32_t, std::uint32_t> g_knownActors;
+        std::unordered_set<std::uint32_t> g_relevantActors;
 
         ActorState ReadActorState(RE::Actor* a_actor, std::uint32_t a_baseFormId)
         {
@@ -40,9 +46,50 @@ namespace SkyrimMP
             return state;
         }
 
-        void SampleKnownActors()
+        bool IsRelevantToPlayer(const ActorState& a_actor, const PlayerState& a_player)
         {
+            if (a_actor.runtimeFormId == 0 ||
+                a_actor.runtimeFormId == a_player.formId ||
+                a_actor.cellFormId == 0 ||
+                a_player.cellFormId == 0) {
+                return false;
+            }
+
+            // Interiors have no worldspace. For this first relevance contract,
+            // only actors in the player's exact interior cell are relevant.
+            if (a_player.worldspaceFormId == 0) {
+                return a_actor.worldspaceFormId == 0 &&
+                       a_actor.cellFormId == a_player.cellFormId;
+            }
+
+            // Exterior actors must share the player's worldspace and fall
+            // inside the provisional client-observation radius.
+            if (a_actor.worldspaceFormId != a_player.worldspaceFormId) {
+                return false;
+            }
+
+            const float dx = a_actor.position.x - a_player.position.x;
+            const float dy = a_actor.position.y - a_player.position.y;
+            const float dz = a_actor.position.z - a_player.position.z;
+            const float distanceSquared = dx * dx + dy * dy + dz * dz;
+
+            return distanceSquared <= kExteriorRelevanceRadiusSquared;
+        }
+
+        void SampleRelevantActors()
+        {
+            const auto playerState = RuntimeProbe::ReadLocalPlayer();
+            if (playerState.formId == 0 || playerState.cellFormId == 0) {
+                return;
+            }
+
+            std::unordered_set<std::uint32_t> currentRelevant;
+
             for (const auto& [runtimeFormId, baseFormId] : g_knownActors) {
+                if (runtimeFormId == playerState.formId) {
+                    continue;
+                }
+
                 auto* form = RE::TESForm::LookupByID(runtimeFormId);
                 if (!form) {
                     continue;
@@ -54,6 +101,20 @@ namespace SkyrimMP
                 }
 
                 const auto state = ReadActorState(actor, baseFormId);
+                if (!IsRelevantToPlayer(state, playerState)) {
+                    continue;
+                }
+
+                currentRelevant.insert(runtimeFormId);
+
+                if (!g_relevantActors.contains(runtimeFormId)) {
+                    logs::info(
+                        "[ACTOR RELEVANCE ENTER] form={:08X} base={:08X} cell={:08X} world={:08X}",
+                        state.runtimeFormId,
+                        state.baseFormId,
+                        state.cellFormId,
+                        state.worldspaceFormId);
+                }
 
                 logs::info(
                     "[ACTOR SNAPSHOT] form={:08X} base={:08X} cell={:08X} world={:08X} "
@@ -69,6 +130,27 @@ namespace SkyrimMP
                     state.rotation.y,
                     state.rotation.z);
             }
+
+            for (const auto runtimeFormId : g_relevantActors) {
+                if (!currentRelevant.contains(runtimeFormId)) {
+                    const auto it = g_knownActors.find(runtimeFormId);
+                    const auto baseFormId = it != g_knownActors.end() ? it->second : 0;
+                    logs::info(
+                        "[ACTOR RELEVANCE EXIT] form={:08X} base={:08X}",
+                        runtimeFormId,
+                        baseFormId);
+                }
+            }
+
+            g_relevantActors = std::move(currentRelevant);
+
+            logs::info(
+                "[ACTOR RELEVANCE SET] relevant={} known={} mode={} cell={:08X} world={:08X}",
+                g_relevantActors.size(),
+                g_knownActors.size(),
+                playerState.worldspaceFormId == 0 ? "interior" : "exterior",
+                playerState.cellFormId,
+                playerState.worldspaceFormId);
         }
     }
 
@@ -77,13 +159,14 @@ namespace SkyrimMP
         REL::Relocation<std::uintptr_t> playerVTable{ RE::VTABLE_PlayerCharacter[0] };
         originalUpdate = playerVTable.write_vfunc(0xAD, Update);
 
-        logs::info("[RE-0.4g] PlayerCharacter::Update hook installed; minimal actor snapshots enabled");
+        logs::info("[RE-0.4h] PlayerCharacter::Update hook installed; relevance-filtered actor snapshots enabled");
     }
 
     void MainThreadHook::ResetActorCache()
     {
         g_knownActors.clear();
-        logs::info("[RE-0.4g] actor discovery cache reset");
+        g_relevantActors.clear();
+        logs::info("[RE-0.4h] actor discovery and relevance caches reset");
     }
 
     void MainThreadHook::Update(RE::Actor* a_actor, float a_delta)
@@ -95,7 +178,7 @@ namespace SkyrimMP
         static bool firstUpdateLogged = false;
 
         if (!firstUpdateLogged) {
-            logs::info("[RE-0.4g] PlayerCharacter::Update hook executing");
+            logs::info("[RE-0.4h] PlayerCharacter::Update hook executing");
             firstUpdateLogged = true;
         }
 
@@ -112,6 +195,8 @@ namespace SkyrimMP
 
         for (const auto& event : pending) {
             if (!event.loaded) {
+                g_relevantActors.erase(event.formId);
+
                 const auto it = g_knownActors.find(event.formId);
                 if (it != g_knownActors.end()) {
                     logs::info(
@@ -150,7 +235,7 @@ namespace SkyrimMP
         if (lastActorSample.time_since_epoch().count() == 0 ||
             now - lastActorSample >= 500ms) {
 
-            SampleKnownActors();
+            SampleRelevantActors();
             lastActorSample = now;
         }
     }
