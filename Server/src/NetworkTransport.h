@@ -47,6 +47,13 @@ namespace SkyrimMP::Server
         std::uint64_t retransmits{};
     };
 
+    struct ReceivedControlPacket
+    {
+        NetworkEndpoint endpoint;
+        std::uint32_t sequence{};
+        std::vector<std::uint8_t> payload;
+    };
+
     struct NetworkTransportStats
     {
         std::uint64_t datagramsReceived{};
@@ -57,6 +64,7 @@ namespace SkyrimMP::Server
         std::uint64_t reliableQueued{};
         std::uint64_t reliableAcked{};
         std::uint64_t retransmits{};
+        std::uint64_t controlReceived{};
     };
 
     class NetworkTransport
@@ -82,6 +90,12 @@ namespace SkyrimMP::Server
             WireChannel a_channel,
             const std::vector<ReplicationMessage>& a_messages);
 
+        std::uint32_t SendControl(
+            const NetworkEndpoint& a_endpoint,
+            WireChannel a_channel,
+            const std::vector<std::uint8_t>& a_payload);
+
+        std::vector<ReceivedControlPacket> DrainControlPackets();
         std::optional<NetworkSession> GetSession(const NetworkEndpoint& a_endpoint) const;
         std::size_t SessionCount() const noexcept;
         const NetworkTransportStats& Stats() const noexcept;
@@ -91,11 +105,13 @@ namespace SkyrimMP::Server
         std::uint16_t boundPort_{};
         bool winsockStarted_{};
         std::unordered_map<NetworkEndpoint, NetworkSession, NetworkEndpointHash> sessions_;
+        std::vector<ReceivedControlPacket> controlInbox_;
         NetworkTransportStats stats_;
 
         NetworkSession& TouchSession(const NetworkEndpoint& a_endpoint);
         void SendBytes(const NetworkEndpoint& a_endpoint, const std::vector<std::uint8_t>& a_bytes);
         void SendAck(const NetworkEndpoint& a_endpoint, std::uint32_t a_ackSequence);
+        std::uint32_t SendPacket(const NetworkEndpoint& a_endpoint, WirePacket a_packet);
     };
 
     void RunNetworkTransportSelfTest();
