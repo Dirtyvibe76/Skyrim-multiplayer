@@ -97,6 +97,7 @@ namespace SkyrimMP::Server
 
         while (!g_stopRequested.load(std::memory_order_relaxed)) {
             transport.PollOnce();
+            sessions.ProcessAcknowledgements(transport);
             sessions.ProcessControlPackets(transport);
             transport.PumpMaintenance(std::chrono::milliseconds(100), std::chrono::seconds(30));
             sessions.ExpireIdle(std::chrono::seconds(15));
@@ -117,6 +118,8 @@ namespace SkyrimMP::Server
                           << " replicationFrames=" << s.replicationFrames
                           << " replicationMessages=" << s.replicationMessages
                           << " reliablePackets=" << s.reliableReplicationPackets
+                          << " reliableAcks=" << s.reliableReplicationAcks
+                          << " reliableMessagesAcked=" << s.reliableReplicationMessagesAcked
                           << " unreliablePackets=" << s.unreliableReplicationPackets
                           << " replicationPasses=" << replicationPasses
                           << " sent=" << t.datagramsSent
@@ -134,6 +137,7 @@ namespace SkyrimMP::Server
                   << " replicationFrames=" << sessions.Stats().replicationFrames
                   << " replicationMessages=" << sessions.Stats().replicationMessages
                   << " reliablePackets=" << sessions.Stats().reliableReplicationPackets
+                  << " reliableAcks=" << sessions.Stats().reliableReplicationAcks
                   << " unreliablePackets=" << sessions.Stats().unreliableReplicationPackets << '\n';
     }
 }
