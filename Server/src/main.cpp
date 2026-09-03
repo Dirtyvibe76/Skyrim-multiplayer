@@ -1,4 +1,5 @@
 #include "BethesdaPlugin.h"
+#include "BethesdaRecordScanner.h"
 #include "FormIdResolver.h"
 #include "PluginStack.h"
 
@@ -359,8 +360,31 @@ int main(int argc, char** argv)
                       << " plugin=" << entry.header.filename << '\n';
         }
 
+        for (const auto& entry : pluginStack) {
+            if (entry.source != SkyrimMP::Server::PluginSource::HostedMod) {
+                continue;
+            }
+
+            const auto summary = SkyrimMP::Server::ScanBethesdaRecords(entry, pluginStack, formNamespaces);
+            std::cout << "[RECORDS] plugin=" << summary.pluginName
+                      << " parsed=" << summary.recordCount
+                      << " canonicalResolved=" << summary.canonicalResolved
+                      << " canonicalUnresolved=" << summary.canonicalUnresolved
+                      << " types=" << summary.typeCounts.size() << '\n';
+
+            for (const auto& [rawFormId, canonical] : summary.samples) {
+                std::cout << "[FORMID] raw=0x" << std::hex << std::uppercase << std::setw(8) << std::setfill('0') << rawFormId
+                          << std::dec << std::nouppercase << std::setfill(' ')
+                          << " -> " << SkyrimMP::Server::FormNamespaceKindName(canonical.kind)
+                          << ':' << canonical.namespaceIndex
+                          << ":0x" << std::hex << std::uppercase << canonical.localId
+                          << std::dec << std::nouppercase
+                          << " plugin=" << canonical.pluginName << '\n';
+            }
+        }
+
         std::cout << "[MODS] manifest=" << fs::absolute(config.manifestPath).string() << '\n';
-        std::cout << "[PASS] server mod-host manifest + canonical FormID namespaces complete\n";
+        std::cout << "[PASS] server mod-host manifest + canonical FormID record scan complete\n";
         return 0;
     } catch (const std::exception& ex) {
         std::cerr << "[FATAL] " << ex.what() << '\n';
