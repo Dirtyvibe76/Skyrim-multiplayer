@@ -127,6 +127,7 @@ namespace SkyrimMP::Server
         socket_ = kInvalidSocketValue;
         boundPort_ = 0;
         sessions_.clear();
+        controlInbox_.clear();
     }
 
     bool NetworkTransport::IsBound() const noexcept
@@ -174,22 +175,15 @@ namespace SkyrimMP::Server
         ++session.packetsSent;
     }
 
-    std::uint32_t NetworkTransport::SendMessages(
-        const NetworkEndpoint& endpoint,
-        WireChannel channel,
-        const std::vector<ReplicationMessage>& messages)
+    std::uint32_t NetworkTransport::SendPacket(const NetworkEndpoint& endpoint, WirePacket packet)
     {
         auto& session = TouchSession(endpoint);
-        WirePacket packet;
-        packet.kind = WirePacketKind::Data;
-        packet.channel = channel;
         packet.sequence = session.nextSendSequence++;
-        packet.messages = messages;
         const auto bytes = SerializeWirePacket(packet);
         SendBytes(endpoint, bytes);
         ++session.packetsSent;
 
-        if (channel == WireChannel::Reliable) {
+        if (packet.channel == WireChannel::Reliable && packet.kind != WirePacketKind::Ack) {
             ReliablePendingPacket pending;
             pending.sequence = packet.sequence;
             pending.bytes = bytes;
@@ -199,6 +193,30 @@ namespace SkyrimMP::Server
             ++stats_.reliableQueued;
         }
         return packet.sequence;
+    }
+
+    std::uint32_t NetworkTransport::SendMessages(
+        const NetworkEndpoint& endpoint,
+        WireChannel channel,
+        const std::vector<ReplicationMessage>& messages)
+    {
+        WirePacket packet;
+        packet.kind = WirePacketKind::Data;
+        packet.channel = channel;
+        packet.messages = messages;
+        return SendPacket(endpoint, std::move(packet));
+    }
+
+    std::uint32_t NetworkTransport::SendControl(
+        const NetworkEndpoint& endpoint,
+        WireChannel channel,
+        const std::vector<std::uint8_t>& payload)
+    {
+        WirePacket packet;
+        packet.kind = WirePacketKind::Control;
+        packet.channel = channel;
+        packet.controlPayload = payload;
+        return SendPacket(endpoint, std::move(packet));
     }
 
     void NetworkTransport::PollOnce()
@@ -235,6 +253,11 @@ namespace SkyrimMP::Server
 
                 if (packet.sequence > session.highestReceivedSequence) session.highestReceivedSequence = packet.sequence;
                 if (packet.channel == WireChannel::Reliable) SendAck(endpoint, packet.sequence);
+
+                if (packet.kind == WirePacketKind::Control) {
+                    controlInbox_.push_back(ReceivedControlPacket{ endpoint, packet.sequence, packet.controlPayload });
+                    ++stats_.controlReceived;
+                }
             } catch (const std::exception&) {
                 ++stats_.malformedDatagrams;
             }
@@ -265,6 +288,13 @@ namespace SkyrimMP::Server
             }
             ++sessionIt;
         }
+    }
+
+    std::vector<ReceivedControlPacket> NetworkTransport::DrainControlPackets()
+    {
+        auto result = std::move(controlInbox_);
+        controlInbox_.clear();
+        return result;
     }
 
     std::optional<NetworkSession> NetworkTransport::GetSession(const NetworkEndpoint& endpoint) const
@@ -356,17 +386,34 @@ namespace SkyrimMP::Server
         const auto session = transport.GetSession(clientEndpoint);
         if (!session || !session->reliablePending.empty()) throw std::runtime_error("network transport self-test ACK did not clear reliable queue");
 
+        WirePacket control;
+        control.kind = WirePacketKind::Control;
+        control.channel = WireChannel::Reliable;
+        control.sequence = 3;
+        control.controlPayload = { 0xAA, 0xBB, 0xCC };
+        const auto controlBytes = SerializeWirePacket(control);
+        if (sendto(client, reinterpret_cast<const char*>(controlBytes.data()), static_cast<int>(controlBytes.size()), 0,
+            reinterpret_cast<const sockaddr*>(&serverAddress), sizeof(serverAddress)) != static_cast<int>(controlBytes.size())) {
+            throw std::runtime_error("network transport self-test control send failed");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        transport.PollOnce();
+        const auto controls = transport.DrainControlPackets();
+        if (controls.size() != 1 || controls.front().payload != control.controlPayload) throw std::runtime_error("network transport control inbox self-test failed");
+        const auto controlAck = DeserializeWirePacket(ReceiveClientDatagram(client));
+        if (controlAck.kind != WirePacketKind::Ack || controlAck.ackSequence != control.sequence) throw std::runtime_error("network transport control ACK self-test failed");
+
         std::this_thread::sleep_for(std::chrono::milliseconds(15));
         transport.PumpMaintenance(std::chrono::seconds(5), std::chrono::milliseconds(5));
         if (transport.SessionCount() != 0) throw std::runtime_error("network transport self-test session timeout failed");
 
         const auto& stats = transport.Stats();
-        if (stats.sessionsCreated != 1 || stats.reliableQueued != 1 || stats.reliableAcked != 1 || stats.retransmits < 1 || stats.sessionsExpired != 1) {
+        if (stats.sessionsCreated != 1 || stats.reliableQueued != 1 || stats.reliableAcked != 1 || stats.retransmits < 1 || stats.sessionsExpired != 1 || stats.controlReceived != 1) {
             throw std::runtime_error("network transport self-test statistics invariant failed");
         }
 
-        std::cout << "[TRANSPORT] udp=true nonblocking=true sessions=true reliableQueue=true resend=true ackRemoval=true timeout=true\n";
-        std::cout << "[TRANSPORT-SELFTEST] bind=true sessionCreate=true reliableSend=true retransmit=true ackClear=true timeoutExpire=true"
+        std::cout << "[TRANSPORT] udp=true nonblocking=true sessions=true reliableQueue=true resend=true ackRemoval=true controlInbox=true timeout=true\n";
+        std::cout << "[TRANSPORT-SELFTEST] bind=true sessionCreate=true reliableSend=true retransmit=true ackClear=true control=true timeoutExpire=true"
                   << " retransmits=" << stats.retransmits
                   << " datagramsSent=" << stats.datagramsSent
                   << " datagramsReceived=" << stats.datagramsReceived << '\n';
