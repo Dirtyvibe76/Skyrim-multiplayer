@@ -87,6 +87,10 @@ namespace SkyrimMP
 
         std::vector<std::uint8_t> MakePacket(PacketKind kind, Channel channel, std::uint32_t sequence, std::uint32_t ackSequence, const std::vector<std::uint8_t>& control)
         {
+            if (kind == PacketKind::Control && control.empty()) throw std::runtime_error("client control packet missing payload");
+            if (kind != PacketKind::Control && !control.empty()) throw std::runtime_error("client non-control packet has control payload");
+            if (control.size() > 0xFFFFu) throw std::runtime_error("client control payload too large");
+
             std::vector<std::uint8_t> out;
             Append(out, kWireMagic);
             Append(out, kWireProtocolVersion);
@@ -95,10 +99,8 @@ namespace SkyrimMP
             Append(out, sequence);
             Append(out, ackSequence);
             Append(out, static_cast<std::uint16_t>(0));
-            Append(out, static_cast<std::uint16_t>(0));
+            Append(out, static_cast<std::uint16_t>(kind == PacketKind::Control ? control.size() : 0));
             if (kind == PacketKind::Control) {
-                if (control.size() > 0xFFFFu) throw std::runtime_error("client control payload too large");
-                Append(out, static_cast<std::uint16_t>(control.size()));
                 out.insert(out.end(), control.begin(), control.end());
             }
             if (out.size() > kMaxDatagram) throw std::runtime_error("client packet exceeds max datagram");
@@ -247,15 +249,14 @@ namespace SkyrimMP
                         const auto sequence = Read<std::uint32_t>(bytes, offset);
                         (void)Read<std::uint32_t>(bytes, offset);
                         const auto messageCount = Read<std::uint16_t>(bytes, offset);
-                        (void)Read<std::uint16_t>(bytes, offset);
+                        const auto controlSize = Read<std::uint16_t>(bytes, offset);
 
                         if (channel == Channel::Reliable && kind != PacketKind::Ack) {
                             SendDatagram(socketValue, server, MakePacket(PacketKind::Ack, Channel::Reliable, nextSequence++, sequence, {}));
                         }
 
                         if (kind == PacketKind::Control) {
-                            const auto payloadSize = Read<std::uint16_t>(bytes, offset);
-                            if (offset + payloadSize != bytes.size() || payloadSize == 0) throw std::runtime_error("bad control payload");
+                            if (controlSize == 0 || offset + controlSize != bytes.size()) throw std::runtime_error("bad control payload");
                             const auto controlKind = static_cast<ControlKind>(Read<std::uint8_t>(bytes, offset));
                             if (controlKind == ControlKind::Welcome) {
                                 const auto protocol = Read<std::uint16_t>(bytes, offset);
