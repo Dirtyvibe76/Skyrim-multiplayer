@@ -24,6 +24,7 @@ namespace SkyrimMP::Server
     {
         std::string pluginName;
         std::uint32_t recordCount{};
+        std::uint32_t groupCount{};
         std::uint32_t canonicalResolved{};
         std::uint32_t canonicalUnresolved{};
         std::map<std::string, std::uint32_t> typeCounts;
