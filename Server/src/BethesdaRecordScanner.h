@@ -20,6 +20,14 @@ namespace SkyrimMP::Server
         bool resolved{};
     };
 
+    struct BethesdaRecordEntry
+    {
+        std::string type;
+        std::uint32_t rawFormId{};
+        std::uint32_t recordFlags{};
+        CanonicalFormId canonical;
+    };
+
     struct BethesdaRecordSummary
     {
         std::string pluginName;
@@ -29,6 +37,7 @@ namespace SkyrimMP::Server
         std::uint32_t canonicalUnresolved{};
         std::map<std::string, std::uint32_t> typeCounts;
         std::vector<std::pair<std::uint32_t, CanonicalFormId>> samples;
+        std::vector<BethesdaRecordEntry> records;
     };
 
     BethesdaRecordSummary ScanBethesdaRecords(
