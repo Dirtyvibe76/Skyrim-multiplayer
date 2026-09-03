@@ -1,0 +1,8 @@
+[Server]
+Name=SkyrimMP Server
+Port=10578
+MaxPlayers=64
+
+[Mods]
+Path=Mods
+Manifest=modmanifest.json
