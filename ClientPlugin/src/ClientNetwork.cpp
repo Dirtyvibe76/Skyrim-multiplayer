@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "ClientNetwork.h"
+#include "RemotePlayerProxyManager.h"
 
 #include <atomic>
 #include <bit>
@@ -25,6 +26,7 @@ namespace SkyrimMP
         constexpr std::uint16_t kServerPort = 10578;
         constexpr auto kLoadOrderRevision = "7dc35a831945468b790a6b3398236c0fe9fe7c8b32425be9ef07ca1434d6c808";
         constexpr std::size_t kMaxDatagram = 1200;
+        constexpr std::uint8_t kRuntimeEntityKindPlayer = 2;
 
         enum class PacketKind : std::uint8_t { Data = 1, Ack = 2, Control = 3 };
         enum class Channel : std::uint8_t { Unreliable = 0, Reliable = 1 };
@@ -109,6 +111,12 @@ namespace SkyrimMP
             return true;
         }
 
+        std::uint32_t CanonicalToRuntimeForm(const CanonicalKey& key)
+        {
+            if (key.light || key.namespaceIndex > 4 || key.localId > 0x00FFFFFFu) return 0;
+            return (key.namespaceIndex << 24) | key.localId;
+        }
+
         void AppendKey(std::vector<std::uint8_t>& out, const CanonicalKey& key)
         {
             Append(out, static_cast<std::uint8_t>(key.light ? 1u : 0u));
@@ -190,6 +198,35 @@ namespace SkyrimMP
             if (sent != static_cast<int>(bytes.size())) throw std::runtime_error("client UDP send failed");
         }
 
+        void QueueRemotePlayer(std::uint64_t id, const ClientReplica& replica)
+        {
+            if (replica.entityKind != kRuntimeEntityKindPlayer || (id & (1ull << 63)) == 0 || !replica.hasCell) return;
+
+            const auto cellFormId = CanonicalToRuntimeForm(replica.cell);
+            if (cellFormId == 0) {
+                logs::warn("[NET-CLIENT] remote player {:016X} skipped: CELL canonical key not runtime-resolvable", id);
+                return;
+            }
+
+            std::uint32_t worldspaceFormId = 0;
+            if (replica.hasWorld) {
+                worldspaceFormId = CanonicalToRuntimeForm(replica.world);
+                if (worldspaceFormId == 0) {
+                    logs::warn("[NET-CLIENT] remote player {:016X} skipped: WRLD canonical key not runtime-resolvable", id);
+                    return;
+                }
+            }
+
+            RemotePlayerProxyManager::EnqueueUpsert(RemotePlayerProxyUpdate{
+                id,
+                replica.revision,
+                replica.position,
+                replica.rotation,
+                cellFormId,
+                worldspaceFormId
+            });
+        }
+
         void DecodeReplicationMessages(
             const std::vector<std::uint8_t>& bytes,
             std::size_t& offset,
@@ -211,6 +248,10 @@ namespace SkyrimMP
                 const auto revision = Read<std::uint64_t>(bytes, offset);
 
                 if (kind == ReplicationKind::Despawn) {
+                    const auto existing = replicas.find(id);
+                    if (existing != replicas.end() && existing->second.entityKind == kRuntimeEntityKindPlayer) {
+                        RemotePlayerProxyManager::EnqueueDespawn(id);
+                    }
                     replicas.erase(id);
                     ++despawns;
                     continue;
@@ -239,6 +280,7 @@ namespace SkyrimMP
                 const auto existing = replicas.find(id);
                 if (existing == replicas.end() || revision >= existing->second.revision) {
                     replicas.insert_or_assign(id, replica);
+                    QueueRemotePlayer(id, replica);
                 }
                 if (kind == ReplicationKind::Spawn) ++spawns;
                 else ++deltas;
@@ -282,7 +324,7 @@ namespace SkyrimMP
             std::uint64_t despawns = 0;
             std::unordered_map<std::uint64_t, ClientReplica> replicas;
 
-            logs::info("[NET-CLIENT] worker started server=127.0.0.1:{} protocol={} revision={}", kServerPort, kReplicationProtocolVersion, kLoadOrderRevision);
+            logs::info("[NET-CLIENT] worker started server=127.0.0.1:{} protocol={} revision={} remotePlayerProxy=controlled-one", kServerPort, kReplicationProtocolVersion, kLoadOrderRevision);
 
             while (!stop.stop_requested() && g_running.load(std::memory_order_relaxed)) {
                 const auto now = std::chrono::steady_clock::now();
@@ -382,6 +424,10 @@ namespace SkyrimMP
                 }
 
                 std::this_thread::sleep_for(2ms);
+            }
+
+            for (const auto& [id, replica] : replicas) {
+                if (replica.entityKind == kRuntimeEntityKindPlayer) RemotePlayerProxyManager::EnqueueDespawn(id);
             }
 
             g_authenticated.store(false, std::memory_order_relaxed);
