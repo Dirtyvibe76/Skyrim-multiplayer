@@ -2,9 +2,6 @@
 
 #include "ClientNetwork.h"
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
-
 #include <atomic>
 #include <bit>
 #include <chrono>
@@ -74,8 +71,6 @@ namespace SkyrimMP
             if (formId == 0) return false;
             const auto high = static_cast<std::uint8_t>(formId >> 24);
             if (high == 0xFE || high == 0xFF) return false;
-            // Current verified server stack has canonical full namespaces 0..4 = Skyrim + four masters.
-            // Refuse any other runtime index rather than guessing a namespace mapping.
             if (high > 4) return false;
             out.light = false;
             out.namespaceIndex = high;
@@ -185,7 +180,7 @@ namespace SkyrimMP
             sockaddr_in server{};
             server.sin_family = AF_INET;
             server.sin_port = htons(kServerPort);
-            inet_pton(AF_INET, "127.0.0.1", &server.sin_addr);
+            server.sin_addr.s_addr = inet_addr("127.0.0.1");
 
             const std::uint64_t nonce = (static_cast<std::uint64_t>(GetCurrentProcessId()) << 32) ^
                 static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
@@ -280,8 +275,6 @@ namespace SkyrimMP
                         } else if (kind == PacketKind::Data) {
                             ++dataPackets;
                             replicationMessages += messageCount;
-                            // Network thread intentionally never resolves or mutates Skyrim forms.
-                            // The next identity/proxy stage will translate NetworkEntityId snapshots to main-thread adapter work.
                             if ((dataPackets % 100) == 1) {
                                 logs::info("[NET-CLIENT] replication received packets={} messages={} latestPacketMessages={}", dataPackets, replicationMessages, messageCount);
                             }
