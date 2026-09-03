@@ -154,9 +154,13 @@ namespace SkyrimMP::Server
     std::vector<std::uint8_t> SerializeWirePacket(const WirePacket& packet)
     {
         if (packet.messages.size() > 0xFFFFu) throw std::runtime_error("too many replication messages for one wire packet");
+        if (packet.controlPayload.size() > 0xFFFFu) throw std::runtime_error("wire control payload too large");
+        if (packet.kind == WirePacketKind::Control && !packet.messages.empty()) throw std::runtime_error("control wire packet cannot contain replication messages");
+        if (packet.kind != WirePacketKind::Control && !packet.controlPayload.empty()) throw std::runtime_error("non-control wire packet cannot contain control payload");
+        if (packet.kind == WirePacketKind::Ack && !packet.messages.empty()) throw std::runtime_error("ACK wire packet cannot contain replication messages");
 
         std::vector<std::uint8_t> out;
-        out.reserve(64 + packet.messages.size() * 96);
+        out.reserve(64 + packet.messages.size() * 96 + packet.controlPayload.size());
         AppendIntegral(out, kWireMagic);
         AppendIntegral(out, kWireProtocolVersion);
         AppendIntegral(out, static_cast<std::uint8_t>(packet.kind));
@@ -164,7 +168,7 @@ namespace SkyrimMP::Server
         AppendIntegral(out, packet.sequence);
         AppendIntegral(out, packet.ackSequence);
         AppendIntegral(out, static_cast<std::uint16_t>(packet.messages.size()));
-        AppendIntegral(out, static_cast<std::uint16_t>(0));
+        AppendIntegral(out, static_cast<std::uint16_t>(packet.controlPayload.size()));
 
         for (const auto& message : packet.messages) {
             AppendIntegral(out, static_cast<std::uint8_t>(message.kind));
@@ -174,6 +178,7 @@ namespace SkyrimMP::Server
             AppendIntegral(out, message.revision);
             if (message.kind != ReplicationMessageKind::Despawn) AppendSnapshot(out, message.snapshot);
         }
+        out.insert(out.end(), packet.controlPayload.begin(), packet.controlPayload.end());
 
         if (out.size() > kMaxUdpDatagramBytes) throw std::runtime_error("wire packet exceeds maximum UDP datagram payload");
         return out;
@@ -188,14 +193,18 @@ namespace SkyrimMP::Server
         WirePacket packet;
         const auto kind = ReadIntegral<std::uint8_t>(bytes, offset);
         const auto channel = ReadIntegral<std::uint8_t>(bytes, offset);
-        if (kind < 1 || kind > 2) throw std::runtime_error("invalid wire packet kind");
+        if (kind < 1 || kind > 3) throw std::runtime_error("invalid wire packet kind");
         if (channel > 1) throw std::runtime_error("invalid wire channel");
         packet.kind = static_cast<WirePacketKind>(kind);
         packet.channel = static_cast<WireChannel>(channel);
         packet.sequence = ReadIntegral<std::uint32_t>(bytes, offset);
         packet.ackSequence = ReadIntegral<std::uint32_t>(bytes, offset);
         const auto messageCount = ReadIntegral<std::uint16_t>(bytes, offset);
-        (void)ReadIntegral<std::uint16_t>(bytes, offset);
+        const auto controlSize = ReadIntegral<std::uint16_t>(bytes, offset);
+
+        if (packet.kind == WirePacketKind::Control && messageCount != 0) throw std::runtime_error("control packet has replication messages");
+        if (packet.kind != WirePacketKind::Control && controlSize != 0) throw std::runtime_error("non-control packet has control payload");
+        if (packet.kind == WirePacketKind::Ack && messageCount != 0) throw std::runtime_error("ACK packet has replication messages");
 
         packet.messages.reserve(messageCount);
         for (std::uint16_t i = 0; i < messageCount; ++i) {
@@ -212,6 +221,10 @@ namespace SkyrimMP::Server
             if (message.kind != ReplicationMessageKind::Despawn) message.snapshot = ReadSnapshot(bytes, offset);
             packet.messages.push_back(std::move(message));
         }
+
+        if (offset + controlSize > bytes.size()) throw std::runtime_error("wire control payload truncated");
+        packet.controlPayload.assign(bytes.begin() + static_cast<std::ptrdiff_t>(offset), bytes.begin() + static_cast<std::ptrdiff_t>(offset + controlSize));
+        offset += controlSize;
 
         if (offset != bytes.size()) throw std::runtime_error("wire packet contains trailing bytes");
         return packet;
@@ -244,6 +257,17 @@ namespace SkyrimMP::Server
         if (deltaRoundTrip.channel != WireChannel::Unreliable || deltaRoundTrip.messages.size() != 1 ||
             deltaRoundTrip.messages.front().snapshot.transform.x != 123.25f) {
             throw std::runtime_error("wire serialization delta round-trip self-test failed");
+        }
+
+        WirePacket control;
+        control.kind = WirePacketKind::Control;
+        control.channel = WireChannel::Reliable;
+        control.sequence = 43;
+        control.controlPayload = { 0x01, 0x02, 0x03, 0x04 };
+        const auto controlBytes = SerializeWirePacket(control);
+        const auto controlRoundTrip = DeserializeWirePacket(controlBytes);
+        if (controlRoundTrip.kind != WirePacketKind::Control || controlRoundTrip.controlPayload != control.controlPayload) {
+            throw std::runtime_error("wire serialization control round-trip self-test failed");
         }
 
         WinsockGuard winsock;
@@ -300,9 +324,10 @@ namespace SkyrimMP::Server
 
         std::cout << "[WIRE] protocol=" << kWireProtocolVersion
                   << " magic=SMP1 maxDatagram=" << kMaxUdpDatagramBytes
-                  << " reliableChannel=true unreliableChannel=true ack=true\n";
-        std::cout << "[WIRE-SELFTEST] serialize=true deserialize=true reliable=true delta=true udpLoopback=true ack=true"
+                  << " reliableChannel=true unreliableChannel=true control=true ack=true\n";
+        std::cout << "[WIRE-SELFTEST] serialize=true deserialize=true reliable=true delta=true control=true udpLoopback=true ack=true"
                   << " reliableBytes=" << reliableBytes.size()
-                  << " deltaBytes=" << deltaBytes.size() << '\n';
+                  << " deltaBytes=" << deltaBytes.size()
+                  << " controlBytes=" << controlBytes.size() << '\n';
     }
 }
