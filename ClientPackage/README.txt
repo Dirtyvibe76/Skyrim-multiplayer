@@ -3,6 +3,8 @@ SkyrimMultiplayer two-player test client
 
 This is a DEVELOPMENT TEST BUILD. It is not a finished multiplayer release.
 
+Package channel: re-0.1-runtime-probe / controlled one-remote-player proxy test.
+
 Requirements
 ------------
 - Windows x64
