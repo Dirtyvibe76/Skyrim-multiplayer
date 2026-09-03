@@ -3,7 +3,9 @@
 #include "MainThreadHook.h"
 #include "RuntimeProbe.h"
 #include "ObjectLoadProbe.h"
+#include "RemoteActorAdapter.h"
 #include "ActorState.h"
+#include "RemoteTransform.h"
 
 #include <cmath>
 #include <limits>
@@ -39,9 +41,9 @@ namespace SkyrimMP
         std::uint32_t g_streamCandidate = 0;
         std::chrono::steady_clock::time_point g_streamCandidateSince{};
         std::chrono::steady_clock::time_point g_streamStarted{};
-        std::chrono::steady_clock::time_point g_streamLastApplied{};
+        std::chrono::steady_clock::time_point g_streamLastQueued{};
         ActorState g_streamOriginal{};
-        std::uint32_t g_streamTick = 0;
+        std::uint32_t g_streamSequence = 0;
 
         ActorState ReadActorState(RE::Actor* a_actor, std::uint32_t a_baseFormId)
         {
@@ -181,7 +183,7 @@ namespace SkyrimMP
                 g_streamCandidate = a_runtimeFormId;
                 g_streamCandidateSince = std::chrono::steady_clock::now();
                 logs::info(
-                    "[REMOTE STREAM PROBE] nearest candidate form={:08X} distance={:.1f}; waiting 5 seconds before 10 Hz / 10 second transform stream",
+                    "[REMOTE STREAM PROBE] nearest candidate form={:08X} distance={:.1f}; waiting 5 seconds before adapter-backed 10 Hz / 10 second stream",
                     a_runtimeFormId,
                     std::sqrt(a_distanceSquared));
             }
@@ -194,9 +196,9 @@ namespace SkyrimMP
             g_streamCandidate = 0;
             g_streamCandidateSince = {};
             g_streamStarted = {};
-            g_streamLastApplied = {};
+            g_streamLastQueued = {};
             g_streamOriginal = {};
-            g_streamTick = 0;
+            g_streamSequence = 0;
         }
 
         void AbortActiveStream(const char* a_reason)
@@ -213,35 +215,15 @@ namespace SkyrimMP
             ClearStreamState(false);
         }
 
-        void RestoreStreamActor(RE::Actor* a_actor)
+        void QueueTransform(const Vec3& a_position, const Vec3& a_rotation)
         {
-            if (!a_actor || g_streamOriginal.runtimeFormId == 0) {
-                return;
-            }
-
-            const RE::NiPoint3 originalPosition{
-                g_streamOriginal.position.x,
-                g_streamOriginal.position.y,
-                g_streamOriginal.position.z
-            };
-            a_actor->SetPosition(originalPosition, true);
-            a_actor->data.angle.x = g_streamOriginal.rotation.x;
-            a_actor->data.angle.y = g_streamOriginal.rotation.y;
-            a_actor->data.angle.z = g_streamOriginal.rotation.z;
-            a_actor->Update3DPosition(true);
-
-            const auto restoredPosition = a_actor->GetPosition();
-            const auto restoredAngle = a_actor->GetAngle();
-            logs::info(
-                "[REMOTE STREAM RESTORED] form={:08X} pos=({:.2f},{:.2f},{:.2f}) rot=({:.3f},{:.3f},{:.3f}) ticks={}",
-                g_streamOriginal.runtimeFormId,
-                restoredPosition.x,
-                restoredPosition.y,
-                restoredPosition.z,
-                restoredAngle.x,
-                restoredAngle.y,
-                restoredAngle.z,
-                g_streamTick);
+            ++g_streamSequence;
+            RemoteActorAdapter::Enqueue(RemoteTransform{
+                g_streamCandidate,
+                g_streamSequence,
+                a_position,
+                a_rotation
+            });
         }
 
         void RunSyntheticRemoteTransformStream()
@@ -284,11 +266,11 @@ namespace SkyrimMP
 
                 g_streamActive = true;
                 g_streamStarted = now;
-                g_streamLastApplied = {};
-                g_streamTick = 0;
+                g_streamLastQueued = {};
+                g_streamSequence = 0;
 
                 logs::info(
-                    "[REMOTE STREAM BEGIN] form={:08X} originPos=({:.2f},{:.2f},{:.2f}) originRot=({:.3f},{:.3f},{:.3f}) cadence=100ms duration=10s radius=120",
+                    "[REMOTE STREAM BEGIN] form={:08X} originPos=({:.2f},{:.2f},{:.2f}) originRot=({:.3f},{:.3f},{:.3f}) path=RemoteActorAdapter cadence=100ms duration=10s radius=120",
                     g_streamOriginal.runtimeFormId,
                     g_streamOriginal.position.x,
                     g_streamOriginal.position.y,
@@ -301,20 +283,29 @@ namespace SkyrimMP
             if (now - g_streamStarted >= kStreamDuration) {
                 auto* form = RE::TESForm::LookupByID(g_streamCandidate);
                 auto* actor = form ? form->As<RE::Actor>() : nullptr;
-                if (actor && actor->Get3D()) {
-                    RestoreStreamActor(actor);
-                    logs::info("[REMOTE STREAM COMPLETE] form={:08X}", g_streamCandidate);
-                } else {
-                    logs::warn(
-                        "[REMOTE STREAM COMPLETE] form={:08X} actor unavailable at restore",
-                        g_streamCandidate);
+                if (!actor || !actor->Get3D()) {
+                    AbortActiveStream("actor unavailable before restore enqueue");
+                    return;
                 }
+
+                QueueTransform(g_streamOriginal.position, g_streamOriginal.rotation);
+                logs::info(
+                    "[REMOTE STREAM RESTORE QUEUED] form={:08X} seq={} pos=({:.2f},{:.2f},{:.2f}) rot=({:.3f},{:.3f},{:.3f})",
+                    g_streamCandidate,
+                    g_streamSequence,
+                    g_streamOriginal.position.x,
+                    g_streamOriginal.position.y,
+                    g_streamOriginal.position.z,
+                    g_streamOriginal.rotation.x,
+                    g_streamOriginal.rotation.y,
+                    g_streamOriginal.rotation.z);
+                logs::info("[REMOTE STREAM COMPLETE] form={:08X} queued={}", g_streamCandidate, g_streamSequence);
                 ClearStreamState(true);
                 return;
             }
 
-            if (g_streamLastApplied.time_since_epoch().count() != 0 &&
-                now - g_streamLastApplied < kStreamCadence) {
+            if (g_streamLastQueued.time_since_epoch().count() != 0 &&
+                now - g_streamLastQueued < kStreamCadence) {
                 return;
             }
 
@@ -335,42 +326,31 @@ namespace SkyrimMP
             const float phase = std::clamp(elapsedSeconds / 10.0f, 0.0f, 1.0f);
             const float orbit = phase * kTwoPi;
 
-            const RE::NiPoint3 requestedPosition{
+            const Vec3 requestedPosition{
                 g_streamOriginal.position.x + std::cos(orbit) * kStreamRadius,
                 g_streamOriginal.position.y + std::sin(orbit) * kStreamRadius,
                 g_streamOriginal.position.z
             };
-            const float requestedPitch = ClampPitch(
-                g_streamOriginal.rotation.x + std::sin(orbit * 2.0f) * kStreamPitchAmplitude);
-            const float requestedYaw = NormalizeAngle(
-                g_streamOriginal.rotation.z + phase * kStreamYawSweep);
+            const Vec3 requestedRotation{
+                ClampPitch(g_streamOriginal.rotation.x + std::sin(orbit * 2.0f) * kStreamPitchAmplitude),
+                g_streamOriginal.rotation.y,
+                NormalizeAngle(g_streamOriginal.rotation.z + phase * kStreamYawSweep)
+            };
 
-            actor->SetPosition(requestedPosition, true);
-            actor->data.angle.x = requestedPitch;
-            actor->data.angle.y = g_streamOriginal.rotation.y;
-            actor->data.angle.z = requestedYaw;
-            actor->Update3DPosition(true);
-
-            const auto observedPosition = actor->GetPosition();
-            const auto observedAngle = actor->GetAngle();
-            ++g_streamTick;
-            g_streamLastApplied = now;
+            QueueTransform(requestedPosition, requestedRotation);
+            g_streamLastQueued = now;
 
             logs::info(
-                "[REMOTE STREAM TICK] form={:08X} tick={} phase={:.3f} reqPos=({:.2f},{:.2f},{:.2f}) obsPos=({:.2f},{:.2f},{:.2f}) reqRot=({:.3f},{:.3f}) obsRot=({:.3f},{:.3f})",
+                "[REMOTE STREAM QUEUED] form={:08X} seq={} phase={:.3f} pos=({:.2f},{:.2f},{:.2f}) rot=({:.3f},{:.3f},{:.3f})",
                 g_streamCandidate,
-                g_streamTick,
+                g_streamSequence,
                 phase,
                 requestedPosition.x,
                 requestedPosition.y,
                 requestedPosition.z,
-                observedPosition.x,
-                observedPosition.y,
-                observedPosition.z,
-                requestedPitch,
-                requestedYaw,
-                observedAngle.x,
-                observedAngle.z);
+                requestedRotation.x,
+                requestedRotation.y,
+                requestedRotation.z);
         }
 
         void SampleRelevantActors()
@@ -505,7 +485,7 @@ namespace SkyrimMP
         REL::Relocation<std::uintptr_t> playerVTable{ RE::VTABLE_PlayerCharacter[0] };
         originalUpdate = playerVTable.write_vfunc(0xAD, Update);
 
-        logs::info("[RE-0.6b] PlayerCharacter::Update hook installed; nearest-actor sustained synthetic remote transform stream armed");
+        logs::info("[RE-0.7a] PlayerCharacter::Update hook installed; inbound RemoteActorAdapter queue armed");
     }
 
     void MainThreadHook::ResetActorCache()
@@ -513,15 +493,9 @@ namespace SkyrimMP
         g_knownActors.clear();
         g_relevantActors.clear();
         g_lastRelevantState.clear();
-        g_streamComplete = false;
-        g_streamActive = false;
-        g_streamCandidate = 0;
-        g_streamCandidateSince = {};
-        g_streamStarted = {};
-        g_streamLastApplied = {};
-        g_streamOriginal = {};
-        g_streamTick = 0;
-        logs::info("[RE-0.6b] actor caches reset; nearest-actor sustained transform stream re-armed");
+        ClearStreamState(false);
+        RemoteActorAdapter::Reset();
+        logs::info("[RE-0.7a] actor caches reset; adapter-backed nearest-actor stream re-armed");
     }
 
     void MainThreadHook::Update(RE::Actor* a_actor, float a_delta)
@@ -533,7 +507,7 @@ namespace SkyrimMP
         static bool firstUpdateLogged = false;
 
         if (!firstUpdateLogged) {
-            logs::info("[RE-0.6b] PlayerCharacter::Update hook executing");
+            logs::info("[RE-0.7a] PlayerCharacter::Update hook executing");
             firstUpdateLogged = true;
         }
 
@@ -609,5 +583,6 @@ namespace SkyrimMP
         }
 
         RunSyntheticRemoteTransformStream();
+        RemoteActorAdapter::ApplyPending(32);
     }
 }
