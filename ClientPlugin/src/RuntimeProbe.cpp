@@ -4,6 +4,8 @@
 #include "GameplayEventProbe.h"
 #include "RuntimeProbe.h"
 
+#include <algorithm>
+
 namespace SkyrimMP
 {
     namespace
@@ -36,6 +38,67 @@ namespace SkyrimMP
             }
             return hash == 0 ? 1 : hash;
         }
+
+        std::uint64_t AppearanceRevision(const PlayerAppearance& appearance)
+        {
+            constexpr std::uint64_t offset = 14695981039346656037ull;
+            constexpr std::uint64_t prime = 1099511628211ull;
+            auto hash = offset;
+            const auto mix = [&](std::uint64_t value) mutable {
+                for (std::size_t i = 0; i < sizeof(value); ++i) {
+                    hash = (hash ^ static_cast<std::uint8_t>(value >> (i * 8))) * prime;
+                }
+            };
+            for (const auto c : appearance.displayName) mix(static_cast<std::uint8_t>(c));
+            mix(appearance.raceFormId);
+            mix(appearance.sex);
+            mix(std::bit_cast<std::uint32_t>(appearance.weight));
+            mix(appearance.hairColorFormId);
+            mix(appearance.faceDetailsFormId);
+            mix(appearance.bodyTintColor);
+            for (const auto formId : appearance.headPartFormIds) mix(formId);
+            for (const auto value : appearance.faceMorphs) mix(std::bit_cast<std::uint32_t>(value));
+            for (const auto value : appearance.faceParts) mix(static_cast<std::uint32_t>(value));
+            return hash == 0 ? 1 : hash;
+        }
+
+        PlayerAppearance CaptureAppearance(RE::PlayerCharacter& player)
+        {
+            PlayerAppearance appearance;
+            auto* base = player.GetActorBase();
+            auto* race = player.GetRace();
+            if (!base || !race) return appearance;
+
+            appearance.valid = true;
+            appearance.displayName = player.GetName() ? player.GetName() : "Player";
+            if (appearance.displayName.size() > 63) appearance.displayName.resize(63);
+            appearance.raceFormId = race->GetFormID();
+            appearance.sex = static_cast<std::uint8_t>(base->GetSex());
+            appearance.weight = base->weight;
+            appearance.bodyTintColor =
+                static_cast<std::uint32_t>(base->bodyTintColor.red) |
+                (static_cast<std::uint32_t>(base->bodyTintColor.green) << 8) |
+                (static_cast<std::uint32_t>(base->bodyTintColor.blue) << 16);
+
+            if (base->headRelatedData) {
+                if (base->headRelatedData->hairColor) appearance.hairColorFormId = base->headRelatedData->hairColor->GetFormID();
+                if (base->headRelatedData->faceDetails) appearance.faceDetailsFormId = base->headRelatedData->faceDetails->GetFormID();
+            }
+
+            const auto headPartCount = std::clamp<int>(base->numHeadParts, 0, 32);
+            appearance.headPartFormIds.reserve(static_cast<std::size_t>(headPartCount));
+            for (int i = 0; i < headPartCount; ++i) {
+                if (base->headParts && base->headParts[i]) appearance.headPartFormIds.push_back(base->headParts[i]->GetFormID());
+            }
+
+            if (base->faceData) {
+                for (std::size_t i = 0; i < appearance.faceMorphs.size(); ++i) appearance.faceMorphs[i] = base->faceData->morphs[i];
+                for (std::size_t i = 0; i < appearance.faceParts.size(); ++i) appearance.faceParts[i] = base->faceData->parts[i];
+            }
+
+            appearance.revision = AppearanceRevision(appearance);
+            return appearance;
+        }
     }
 
     PlayerState RuntimeProbe::ReadLocalPlayer()
@@ -49,6 +112,7 @@ namespace SkyrimMP
 
         state.characterId = CharacterId(*player);
         state.formId = player->GetFormID();
+        state.appearance = CaptureAppearance(*player);
 
         const auto position = player->GetPosition();
         state.position = {
@@ -100,6 +164,17 @@ namespace SkyrimMP
         const auto state = ReadLocalPlayer();
         ClientNetwork::SubmitLocalPlayer(state);
 
+        if (state.appearance.valid && (firstSample || state.appearance.revision != previous.appearance.revision)) {
+            logs::info(
+                "[APPEARANCE-CAPTURE] revision={:016X} name={} race={:08X} sex={} weight={:.3f} headParts={}",
+                state.appearance.revision,
+                state.appearance.displayName,
+                state.appearance.raceFormId,
+                state.appearance.sex,
+                state.appearance.weight,
+                state.appearance.headPartFormIds.size());
+        }
+
         const bool changed =
             firstSample ||
             state.formId != previous.formId ||
@@ -112,7 +187,8 @@ namespace SkyrimMP
             MeaningfullyDifferent(state.rotation.y, previous.rotation.y, 0.002f) ||
             MeaningfullyDifferent(state.rotation.z, previous.rotation.z, 0.002f) ||
             state.actionFlags != previous.actionFlags ||
-            state.equippedFormIds != previous.equippedFormIds;
+            state.equippedFormIds != previous.equippedFormIds ||
+            state.appearance.revision != previous.appearance.revision;
 
         if (!changed) {
             return;
