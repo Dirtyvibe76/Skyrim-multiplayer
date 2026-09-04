@@ -15,6 +15,8 @@ namespace SkyrimMP
         std::optional<ServerWorldBootstrap> g_pending;
         std::atomic_bool g_applied{ false };
         std::uint64_t g_appliedPlayerEntityId{};
+        bool g_characterCreatorRequested{};
+        bool g_characterCreatorObservedOpen{};
 
         bool ContextMatches(const ServerWorldBootstrap& bootstrap, RE::PlayerCharacter* player)
         {
@@ -31,6 +33,35 @@ namespace SkyrimMP
                 return worldFormId == bootstrap.worldspaceFormId;
             }
             return cell->GetFormID() == bootstrap.cellFormId;
+        }
+
+        bool CompleteFirstLoginCharacterCreation()
+        {
+            auto* ui = RE::UI::GetSingleton();
+            if (!g_characterCreatorRequested) {
+                auto* queue = RE::UIMessageQueue::GetSingleton();
+                if (!queue) {
+                    logs::warn("[MP CHARACTER CREATE WAIT] reason=UI message queue unavailable");
+                    return false;
+                }
+                queue->AddMessage(RE::RaceSexMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kShow, nullptr);
+                g_characterCreatorRequested = true;
+                logs::info("[MP CHARACTER CREATE] requested native RaceSex Menu before first multiplayer save");
+                return false;
+            }
+
+            if (!g_characterCreatorObservedOpen) {
+                if (ui && ui->IsMenuOpen(RE::RaceSexMenu::MENU_NAME)) {
+                    g_characterCreatorObservedOpen = true;
+                    logs::info("[MP CHARACTER CREATE] RaceSex Menu open; waiting for player confirmation");
+                }
+                return false;
+            }
+
+            if (ui && ui->IsMenuOpen(RE::RaceSexMenu::MENU_NAME)) return false;
+
+            logs::info("[MP CHARACTER CREATE] RaceSex Menu closed; multiplayer appearance accepted");
+            return true;
         }
     }
 
@@ -69,9 +100,6 @@ namespace SkyrimMP
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) return 0;
 
-        // Protocol v4 accepts the client's already-loaded location as the initial
-        // server-owned spawn. An optional anchor remains available for future server
-        // transfers, but ordinary joins never depend on an unloaded world reference.
         if (bootstrap.anchorRuntimeFormId != 0) {
             auto* anchorForm = RE::TESForm::LookupByID(bootstrap.anchorRuntimeFormId);
             auto* anchor = anchorForm ? anchorForm->As<RE::TESObjectREFR>() : nullptr;
@@ -79,22 +107,31 @@ namespace SkyrimMP
                 logs::warn("[WORLD BOOTSTRAP WAIT] anchor={:08X} reason=reference unavailable", bootstrap.anchorRuntimeFormId);
                 return 0;
             }
-            player->MoveTo(anchor);
+
+            // Move only until the first-login context has actually been reached.
+            // Once RaceSex Menu is open, repeatedly calling MoveTo would disturb
+            // the character creator camera and its temporary player state.
+            if (!ContextMatches(bootstrap, player) && !g_characterCreatorRequested) {
+                player->MoveTo(anchor);
+            }
         } else if (!ContextMatches(bootstrap, player)) {
             logs::warn(
                 "[WORLD BOOTSTRAP WAIT] playerEntity={:016X} reason=local context not ready",
                 bootstrap.playerEntityId);
             return 0;
         }
-        player->SetPosition(RE::NiPoint3{
-            bootstrap.position.x,
-            bootstrap.position.y,
-            bootstrap.position.z
-        }, true);
-        player->data.angle.x = bootstrap.rotation.x;
-        player->data.angle.y = bootstrap.rotation.y;
-        player->data.angle.z = bootstrap.rotation.z;
-        player->Update3DPosition(true);
+
+        if (!g_characterCreatorRequested) {
+            player->SetPosition(RE::NiPoint3{
+                bootstrap.position.x,
+                bootstrap.position.y,
+                bootstrap.position.z
+            }, true);
+            player->data.angle.x = bootstrap.rotation.x;
+            player->data.angle.y = bootstrap.rotation.y;
+            player->data.angle.z = bootstrap.rotation.z;
+            player->Update3DPosition(true);
+        }
 
         if (!ContextMatches(bootstrap, player)) {
             logs::warn(
@@ -104,21 +141,28 @@ namespace SkyrimMP
             return 0;
         }
 
+        // A non-zero anchor is the server's one-time onboarding assignment.
+        // Do not create the SkyrimMP save until the player has explicitly made
+        // their multiplayer character. This prevents an arbitrary single-player
+        // appearance from becoming the multiplayer identity by accident.
+        if (bootstrap.anchorRuntimeFormId != 0 && !CompleteFirstLoginCharacterCreation()) {
+            return 0;
+        }
+
         const auto observed = player->GetPosition();
 
-        // A non-zero anchor denotes the one-time Riverwood import. Branch the
-        // user's post-Helgen single-player save before multiplayer progression.
         if (bootstrap.anchorRuntimeFormId != 0) {
             if (auto* saves = RE::BGSSaveLoadManager::GetSingleton()) {
                 char branchName[64]{};
                 std::snprintf(branchName, sizeof(branchName), "SkyrimMP_%08X", saves->currentCharacterID);
                 saves->Save(branchName);
-                logs::info("[WORLD BOOTSTRAP SAVE] branch={} sourcePreserved=true", branchName);
+                logs::info("[WORLD BOOTSTRAP SAVE] branch={} multiplayerCharacterCreated=true sourcePreserved=true", branchName);
             } else {
                 logs::error("[WORLD BOOTSTRAP SAVE] failed: save manager unavailable");
                 return 0;
             }
         }
+
         {
             std::scoped_lock lock(g_mutex);
             g_pending.reset();
@@ -143,6 +187,8 @@ namespace SkyrimMP
         std::scoped_lock lock(g_mutex);
         g_pending.reset();
         g_appliedPlayerEntityId = 0;
+        g_characterCreatorRequested = false;
+        g_characterCreatorObservedOpen = false;
         g_applied.store(false, std::memory_order_release);
         logs::info("[WORLD BOOTSTRAP] reset");
     }
