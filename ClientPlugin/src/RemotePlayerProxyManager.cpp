@@ -211,15 +211,23 @@ namespace SkyrimMP
                 g_proxies.size(),
                 kMaxNativeProxies);
 
+            // CreateReferenceAtLocation can return a valid Actor reference before
+            // Skyrim has materialized that reference's scene graph. The previous
+            // code only waited for Get3D(), so a proxy that arrived on the one-time
+            // reliable spawn could remain invisible forever if no later delta was
+            // available to revisit it. Explicitly enable the normal NPC reference
+            // and update its transform now so the engine is asked to attach 3D.
+            actor->Enable(false);
+            ApplyTransform(*actor, update);
+
             if (!actor->Get3D()) {
-                logs::info("[REMOTE PLAYER AVATAR PENDING] networkId={:016X} form={:08X} reason=waiting-for-3D",
+                logs::info("[REMOTE PLAYER AVATAR PENDING] networkId={:016X} form={:08X} reason=waiting-for-3D-after-enable",
                     networkEntityId, actor->GetFormID());
                 return true;
             }
 
             proxyIt->second.initialized = true;
             InitializeVisualOnlyProxy(*actor, networkEntityId, avatarBase->GetFormID());
-            ApplyTransform(*actor, update);
             return true;
         }
 
@@ -252,10 +260,23 @@ namespace SkyrimMP
             }
 
             auto* actor = ResolveActor(proxy);
-            if (!actor || !actor->Get3D()) {
-                logs::debug("[REMOTE PLAYER AVATAR WAIT] networkId={:016X} revision={} reason=actor-3D-unavailable",
+            if (!actor) {
+                logs::debug("[REMOTE PLAYER AVATAR WAIT] networkId={:016X} revision={} reason=actor-unavailable",
                     update.networkEntityId, update.revision);
                 return;
+            }
+
+            if (!actor->Get3D()) {
+                // A reference may have been created while the cell was still
+                // finishing its load. Re-assert Enable on a later upsert so the
+                // avatar cannot become permanently stuck as a handle-only object.
+                actor->Enable(false);
+                ApplyTransform(*actor, update);
+                if (!actor->Get3D()) {
+                    logs::debug("[REMOTE PLAYER AVATAR WAIT] networkId={:016X} revision={} reason=actor-3D-unavailable-after-enable",
+                        update.networkEntityId, update.revision);
+                    return;
+                }
             }
 
             if (!proxy.initialized) {
