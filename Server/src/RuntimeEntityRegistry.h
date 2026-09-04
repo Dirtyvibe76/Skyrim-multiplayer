@@ -2,6 +2,7 @@
 
 #include "CanonicalRecordDatabase.h"
 #include "InterestManagementIndex.h"
+#include "PlayerState.h"
 #include "WorldReferenceDatabase.h"
 #include "WorldSpatialContext.h"
 
@@ -49,6 +50,7 @@ namespace SkyrimMP::Server
         bool hasStatusState{};
         std::uint16_t actionFlags{};
         std::vector<std::uint32_t> equippedFormIds;
+        PlayerAppearance appearance;
         std::uint64_t revision{};
     };
 
