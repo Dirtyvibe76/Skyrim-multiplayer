@@ -17,6 +17,8 @@ namespace SkyrimMP
         std::uint64_t g_appliedPlayerEntityId{};
         bool g_characterCreatorRequested{};
         bool g_characterCreatorObservedOpen{};
+        std::uint32_t g_characterCreatorAttempts{};
+        std::chrono::steady_clock::time_point g_lastCharacterCreatorRequest{};
 
         bool ContextMatches(const ServerWorldBootstrap& bootstrap, RE::PlayerCharacter* player)
         {
@@ -35,18 +37,38 @@ namespace SkyrimMP
             return cell->GetFormID() == bootstrap.cellFormId;
         }
 
-        bool CompleteFirstLoginCharacterCreation()
+        bool RunShowRaceMenu(RE::PlayerCharacter& player)
+        {
+            auto* factory = RE::IFormFactory::GetConcreteFormFactoryByType<RE::Script>();
+            if (!factory) {
+                logs::warn("[MP CHARACTER CREATE WAIT] reason=Script form factory unavailable");
+                return false;
+            }
+
+            auto* form = factory->Create();
+            auto* script = form ? form->As<RE::Script>() : nullptr;
+            if (!script) {
+                logs::warn("[MP CHARACTER CREATE WAIT] reason=Script form creation failed");
+                return false;
+            }
+
+            script->SetCommand("showracemenu");
+            script->CompileAndRun(&player);
+            script->ClearCommand();
+            return true;
+        }
+
+        bool CompleteFirstLoginCharacterCreation(RE::PlayerCharacter& player)
         {
             auto* ui = RE::UI::GetSingleton();
+            const auto now = std::chrono::steady_clock::now();
+
             if (!g_characterCreatorRequested) {
-                auto* queue = RE::UIMessageQueue::GetSingleton();
-                if (!queue) {
-                    logs::warn("[MP CHARACTER CREATE WAIT] reason=UI message queue unavailable");
-                    return false;
-                }
-                queue->AddMessage(RE::RaceSexMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kShow, nullptr);
+                if (!RunShowRaceMenu(player)) return false;
                 g_characterCreatorRequested = true;
-                logs::info("[MP CHARACTER CREATE] requested native RaceSex Menu before first multiplayer save");
+                g_characterCreatorAttempts = 1;
+                g_lastCharacterCreatorRequest = now;
+                logs::info("[MP CHARACTER CREATE] requested native RaceSex Menu through showracemenu before first multiplayer save");
                 return false;
             }
 
@@ -54,6 +76,19 @@ namespace SkyrimMP
                 if (ui && ui->IsMenuOpen(RE::RaceSexMenu::MENU_NAME)) {
                     g_characterCreatorObservedOpen = true;
                     logs::info("[MP CHARACTER CREATE] RaceSex Menu open; waiting for player confirmation");
+                    return false;
+                }
+
+                // showracemenu is dispatched through Skyrim's script command
+                // machinery and can be delayed while the Riverwood transfer is
+                // still settling. Retry a bounded number of times instead of
+                // leaving multiplayer bootstrap permanently stuck.
+                if (g_characterCreatorAttempts < 3 && now - g_lastCharacterCreatorRequest >= std::chrono::seconds(2)) {
+                    if (RunShowRaceMenu(player)) {
+                        ++g_characterCreatorAttempts;
+                        g_lastCharacterCreatorRequest = now;
+                        logs::warn("[MP CHARACTER CREATE RETRY] attempt={} RaceSex Menu not observed open yet", g_characterCreatorAttempts);
+                    }
                 }
                 return false;
             }
@@ -145,7 +180,7 @@ namespace SkyrimMP
         // Do not create the SkyrimMP save until the player has explicitly made
         // their multiplayer character. This prevents an arbitrary single-player
         // appearance from becoming the multiplayer identity by accident.
-        if (bootstrap.anchorRuntimeFormId != 0 && !CompleteFirstLoginCharacterCreation()) {
+        if (bootstrap.anchorRuntimeFormId != 0 && !CompleteFirstLoginCharacterCreation(*player)) {
             return 0;
         }
 
@@ -189,6 +224,8 @@ namespace SkyrimMP
         g_appliedPlayerEntityId = 0;
         g_characterCreatorRequested = false;
         g_characterCreatorObservedOpen = false;
+        g_characterCreatorAttempts = 0;
+        g_lastCharacterCreatorRequest = {};
         g_applied.store(false, std::memory_order_release);
         logs::info("[WORLD BOOTSTRAP] reset");
     }
