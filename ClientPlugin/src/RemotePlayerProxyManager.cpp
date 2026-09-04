@@ -2,6 +2,7 @@
 
 #include "RemotePlayerProxyManager.h"
 
+#include <algorithm>
 #include <deque>
 #include <mutex>
 #include <unordered_map>
@@ -11,14 +12,13 @@ namespace SkyrimMP
 {
     namespace
     {
-        // One client never renders its own authoritative player entity, so this
-        // supports every remote participant on the server's default 64-player cap.
         constexpr std::size_t kMaxNativeProxies = 63;
         constexpr float kRetiredProxyDepth = 100000.0f;
 
         enum class ProxyCommandKind : std::uint8_t
         {
             Upsert,
+            Appearance,
             Despawn
         };
 
@@ -26,14 +26,17 @@ namespace SkyrimMP
         {
             ProxyCommandKind kind{ ProxyCommandKind::Upsert };
             RemotePlayerProxyUpdate update;
+            PlayerAppearance appearance;
             std::uint64_t networkEntityId{};
         };
 
         struct NativeProxy
         {
             RE::ObjectRefHandle handle;
+            RE::TESNPC* dynamicBase{};
             bool initialized{};
             std::uint64_t lastRevision{};
+            std::uint64_t appearanceRevision{};
             std::uint32_t cellFormId{};
             std::uint32_t worldspaceFormId{};
         };
@@ -42,12 +45,12 @@ namespace SkyrimMP
         std::deque<std::uint64_t> g_order;
         std::unordered_map<std::uint64_t, ProxyCommand> g_pending;
         std::unordered_map<std::uint64_t, NativeProxy> g_proxies;
+        std::unordered_map<std::uint64_t, PlayerAppearance> g_appearances;
 
-        // Do not release retired native Actor handles during a running Skyrim
-        // process. The observed disconnect crash occurred immediately after the
-        // old path called Actor::Disable() and erased the proxy handle. Retaining
-        // these handles intentionally trades a tiny bounded alpha-test leak for a
-        // stable Actor lifetime until we have a proven engine-safe destruction path.
+        // Native actor retirement remains intentionally conservative. Skyrim
+        // previously terminated immediately after Disable()+handle release on a
+        // remote-player despawn. Retain both reference and duplicated NPC base
+        // until process shutdown while the safe destruction path is investigated.
         std::vector<NativeProxy> g_retiredProxies;
 
         bool IsDynamicPlayerEntity(std::uint64_t id)
@@ -69,7 +72,19 @@ namespace SkyrimMP
                     return;
                 }
                 if (existing->second.kind == ProxyCommandKind::Despawn) return;
-                if (command.update.revision >= existing->second.update.revision) existing->second = std::move(command);
+                if (command.kind == ProxyCommandKind::Appearance) {
+                    // Appearance must not be lost behind a transform upsert. Cache
+                    // it immediately; the queued transform can then consume it.
+                    const auto appearanceIt = g_appearances.find(command.networkEntityId);
+                    if (appearanceIt == g_appearances.end() || command.appearance.revision >= appearanceIt->second.revision) {
+                        g_appearances[command.networkEntityId] = command.appearance;
+                    }
+                    return;
+                }
+                if (existing->second.kind == ProxyCommandKind::Appearance ||
+                    command.update.revision >= existing->second.update.revision) {
+                    existing->second = std::move(command);
+                }
                 return;
             }
 
@@ -94,15 +109,27 @@ namespace SkyrimMP
             return localWorld == update.worldspaceFormId;
         }
 
-        RE::TESNPC* SelectSafeAvatarBase(RE::PlayerCharacter& player, std::uint64_t networkEntityId)
+        RE::TESNPC* SelectSafeAvatarBase(
+            RE::PlayerCharacter& player,
+            std::uint64_t networkEntityId,
+            const PlayerAppearance* appearance)
         {
-            auto* race = player.GetRace();
-            auto* playerBase = player.GetActorBase();
-            if (!race || !playerBase) return nullptr;
+            RE::TESRace* race = nullptr;
+            std::size_t sex = 0;
 
-            const auto sex = static_cast<std::size_t>(playerBase->GetSex());
+            if (appearance && appearance->valid && appearance->sex <= 1 && appearance->raceFormId != 0) {
+                race = RE::TESForm::LookupByID<RE::TESRace>(appearance->raceFormId);
+                sex = appearance->sex;
+            }
+
+            if (!race) {
+                race = player.GetRace();
+                auto* playerBase = player.GetActorBase();
+                if (!race || !playerBase) return nullptr;
+                sex = static_cast<std::size_t>(playerBase->GetSex());
+            }
+
             if (sex > 1) return nullptr;
-
             auto* faceData = race->faceRelatedData[sex];
             if (!faceData || !faceData->presetNPCs || faceData->presetNPCs->empty()) return nullptr;
 
@@ -113,6 +140,111 @@ namespace SkyrimMP
                 if (auto* preset = presets[(first + offset) % count]) return preset;
             }
             return nullptr;
+        }
+
+        bool ApplyAppearanceToBase(
+            RE::TESNPC& base,
+            const PlayerAppearance& appearance,
+            std::uint64_t networkEntityId)
+        {
+            if (!appearance.valid || appearance.raceFormId == 0 || appearance.sex > 1) {
+                logs::warn(
+                    "[APPEARANCE-FAIL] networkId={:016X} revision={:016X} reason=invalid profile",
+                    networkEntityId,
+                    appearance.revision);
+                return false;
+            }
+
+            auto* race = RE::TESForm::LookupByID<RE::TESRace>(appearance.raceFormId);
+            if (!race) {
+                logs::warn(
+                    "[APPEARANCE-FAIL] networkId={:016X} revision={:016X} race={:08X} reason=race unresolved",
+                    networkEntityId,
+                    appearance.revision,
+                    appearance.raceFormId);
+                return false;
+            }
+
+            base.race = race;
+            base.originalRace = race;
+            base.SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kFemale, appearance.sex == 1, false);
+            base.SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kNoActivation, true, false);
+            base.weight = std::clamp(appearance.weight, 0.0f, 100.0f);
+            if (!appearance.displayName.empty()) base.SetFullName(appearance.displayName.c_str());
+
+            base.bodyTintColor.red = static_cast<std::uint8_t>(appearance.bodyTintColor & 0xFFu);
+            base.bodyTintColor.green = static_cast<std::uint8_t>((appearance.bodyTintColor >> 8) & 0xFFu);
+            base.bodyTintColor.blue = static_cast<std::uint8_t>((appearance.bodyTintColor >> 16) & 0xFFu);
+
+            if (appearance.hairColorFormId != 0) {
+                if (auto* hairColor = RE::TESForm::LookupByID<RE::BGSColorForm>(appearance.hairColorFormId)) {
+                    base.SetHairColor(hairColor);
+                } else {
+                    logs::warn(
+                        "[APPEARANCE-FAIL] networkId={:016X} revision={:016X} hairColor={:08X} reason=hair color unresolved",
+                        networkEntityId,
+                        appearance.revision,
+                        appearance.hairColorFormId);
+                }
+            }
+
+            if (appearance.faceDetailsFormId != 0) {
+                if (auto* faceDetails = RE::TESForm::LookupByID<RE::BGSTextureSet>(appearance.faceDetailsFormId)) {
+                    base.SetFaceTexture(faceDetails);
+                }
+            }
+
+            for (const auto formId : appearance.headPartFormIds) {
+                if (auto* headPart = RE::TESForm::LookupByID<RE::BGSHeadPart>(formId)) {
+                    base.ChangeHeadPart(headPart);
+                } else {
+                    logs::warn(
+                        "[APPEARANCE-FAIL] networkId={:016X} revision={:016X} headPart={:08X} reason=head part unresolved",
+                        networkEntityId,
+                        appearance.revision,
+                        formId);
+                }
+            }
+
+            if (base.faceData) {
+                for (std::size_t i = 0; i < appearance.faceMorphs.size(); ++i) base.faceData->morphs[i] = appearance.faceMorphs[i];
+                for (std::size_t i = 0; i < appearance.faceParts.size(); ++i) base.faceData->parts[i] = appearance.faceParts[i];
+            }
+
+            logs::info(
+                "[APPEARANCE-APPLY] networkId={:016X} revision={:016X} base={:08X} name={} race={:08X} sex={} weight={:.3f} headParts={}",
+                networkEntityId,
+                appearance.revision,
+                base.GetFormID(),
+                appearance.displayName,
+                appearance.raceFormId,
+                appearance.sex,
+                appearance.weight,
+                appearance.headPartFormIds.size());
+            return true;
+        }
+
+        RE::TESNPC* CreateDynamicAvatarBase(
+            RE::PlayerCharacter& player,
+            std::uint64_t networkEntityId,
+            const PlayerAppearance* appearance)
+        {
+            auto* preset = SelectSafeAvatarBase(player, networkEntityId, appearance);
+            if (!preset) return nullptr;
+
+            auto* duplicateForm = preset->CreateDuplicateForm(false, nullptr);
+            auto* duplicate = duplicateForm ? duplicateForm->As<RE::TESNPC>() : nullptr;
+            if (!duplicate) {
+                logs::warn(
+                    "[APPEARANCE-FAIL] networkId={:016X} reason=NPC base duplication failed preset={:08X}",
+                    networkEntityId,
+                    preset->GetFormID());
+                return nullptr;
+            }
+
+            duplicate->SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kNoActivation, true, false);
+            if (appearance && appearance->valid) ApplyAppearanceToBase(*duplicate, *appearance, networkEntityId);
+            return duplicate;
         }
 
         void InitializeVisualOnlyProxy(RE::Actor& actor, std::uint64_t networkEntityId, std::uint32_t baseFormId)
@@ -142,12 +274,6 @@ namespace SkyrimMP
             std::uint32_t formId = 0;
             if (auto* actor = ResolveActor(proxy)) {
                 formId = actor->GetFormID();
-
-                // Keep the reference alive and remove it from gameplay without
-                // invoking Actor::Disable(). SetPosition/Update3DPosition are the
-                // same transform operations already exercised continuously by the
-                // live remote-player path, so this avoids introducing a different
-                // native destruction/lifetime transition on disconnect.
                 actor->SetActivationBlocked(true);
                 actor->EnableAI(false);
                 actor->SetCollision(false);
@@ -174,7 +300,6 @@ namespace SkyrimMP
         {
             const auto it = g_proxies.find(networkEntityId);
             if (it == g_proxies.end()) return;
-
             NativeProxy proxy = std::move(it->second);
             g_proxies.erase(it);
             QuarantineProxy(networkEntityId, std::move(proxy), reason);
@@ -192,9 +317,13 @@ namespace SkyrimMP
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (!LocalContextMatches(update, player)) return false;
 
-            auto* avatarBase = SelectSafeAvatarBase(*player, networkEntityId);
+            const PlayerAppearance* appearance = nullptr;
+            const auto appearanceIt = g_appearances.find(networkEntityId);
+            if (appearanceIt != g_appearances.end()) appearance = &appearanceIt->second;
+
+            auto* avatarBase = CreateDynamicAvatarBase(*player, networkEntityId, appearance);
             if (!avatarBase) {
-                logs::warn("[REMOTE PLAYER DROP] networkId={:016X} reason=no safe NPC race preset", networkEntityId);
+                logs::warn("[REMOTE PLAYER DROP] networkId={:016X} reason=no safe unique NPC avatar base", networkEntityId);
                 return false;
             }
 
@@ -225,7 +354,9 @@ namespace SkyrimMP
 
             NativeProxy proxy;
             proxy.handle = actor->GetHandle();
+            proxy.dynamicBase = avatarBase;
             proxy.lastRevision = update.revision;
+            proxy.appearanceRevision = appearance ? appearance->revision : 0;
             proxy.cellFormId = update.cellFormId;
             proxy.worldspaceFormId = update.worldspaceFormId;
             const auto [proxyIt, inserted] = g_proxies.emplace(networkEntityId, std::move(proxy));
@@ -233,18 +364,20 @@ namespace SkyrimMP
                 logs::warn("[REMOTE PLAYER DROP] networkId={:016X} reason=duplicate active proxy after native create", networkEntityId);
                 NativeProxy orphan;
                 orphan.handle = actor->GetHandle();
+                orphan.dynamicBase = avatarBase;
                 QuarantineProxy(networkEntityId, std::move(orphan), "duplicate native create");
                 return false;
             }
 
             logs::info(
-                "[REMOTE PLAYER AVATAR SPAWN] networkId={:016X} form={:08X} base={:08X} cell={:08X} world={:08X} revision={} active={}/{}",
+                "[REMOTE PLAYER AVATAR SPAWN] networkId={:016X} form={:08X} base={:08X} cell={:08X} world={:08X} revision={} appearanceRevision={:016X} active={}/{}",
                 networkEntityId,
                 actor->GetFormID(),
                 avatarBase->GetFormID(),
                 update.cellFormId,
                 update.worldspaceFormId,
                 update.revision,
+                proxyIt->second.appearanceRevision,
                 g_proxies.size(),
                 kMaxNativeProxies);
 
@@ -252,14 +385,47 @@ namespace SkyrimMP
             ApplyTransform(*actor, update);
 
             if (!actor->Get3D()) {
-                logs::info("[REMOTE PLAYER AVATAR PENDING] networkId={:016X} form={:08X} reason=waiting-for-3D-after-enable",
-                    networkEntityId, actor->GetFormID());
+                logs::info(
+                    "[REMOTE PLAYER AVATAR PENDING] networkId={:016X} form={:08X} reason=waiting-for-3D-after-enable",
+                    networkEntityId,
+                    actor->GetFormID());
                 return true;
             }
 
             proxyIt->second.initialized = true;
             InitializeVisualOnlyProxy(*actor, networkEntityId, avatarBase->GetFormID());
             return true;
+        }
+
+        void ApplyAppearance(std::uint64_t networkEntityId, const PlayerAppearance& appearance)
+        {
+            const auto cached = g_appearances.find(networkEntityId);
+            if (cached != g_appearances.end() && appearance.revision < cached->second.revision) return;
+            g_appearances[networkEntityId] = appearance;
+
+            auto proxyIt = g_proxies.find(networkEntityId);
+            if (proxyIt == g_proxies.end()) {
+                logs::info(
+                    "[APPEARANCE-RECEIVE] networkId={:016X} revision={:016X} state=cached-before-spawn",
+                    networkEntityId,
+                    appearance.revision);
+                return;
+            }
+
+            auto& proxy = proxyIt->second;
+            if (appearance.revision <= proxy.appearanceRevision || !proxy.dynamicBase) return;
+            if (!ApplyAppearanceToBase(*proxy.dynamicBase, appearance, networkEntityId)) return;
+
+            proxy.appearanceRevision = appearance.revision;
+            if (auto* actor = ResolveActor(proxy)) {
+                actor->SetActivationBlocked(true);
+                actor->EnableAI(false);
+                actor->SetCollision(false);
+                actor->DoReset3D(true);
+                actor->SetActivationBlocked(true);
+                actor->EnableAI(false);
+                actor->SetCollision(false);
+            }
         }
 
         void ApplyUpsert(const RemotePlayerProxyUpdate& update)
@@ -287,8 +453,10 @@ namespace SkyrimMP
 
             auto* actor = ResolveActor(proxy);
             if (!actor) {
-                logs::debug("[REMOTE PLAYER AVATAR WAIT] networkId={:016X} revision={} reason=actor-unavailable",
-                    update.networkEntityId, update.revision);
+                logs::debug(
+                    "[REMOTE PLAYER AVATAR WAIT] networkId={:016X} revision={} reason=actor-unavailable",
+                    update.networkEntityId,
+                    update.revision);
                 return;
             }
 
@@ -296,8 +464,10 @@ namespace SkyrimMP
                 actor->Enable(false);
                 ApplyTransform(*actor, update);
                 if (!actor->Get3D()) {
-                    logs::debug("[REMOTE PLAYER AVATAR WAIT] networkId={:016X} revision={} reason=actor-3D-unavailable-after-enable",
-                        update.networkEntityId, update.revision);
+                    logs::debug(
+                        "[REMOTE PLAYER AVATAR WAIT] networkId={:016X} revision={} reason=actor-3D-unavailable-after-enable",
+                        update.networkEntityId,
+                        update.revision);
                     return;
                 }
             }
@@ -321,6 +491,17 @@ namespace SkyrimMP
         command.kind = ProxyCommandKind::Upsert;
         command.networkEntityId = update.networkEntityId;
         command.update = update;
+        QueueLocked(std::move(command));
+    }
+
+    void RemotePlayerProxyManager::EnqueueAppearance(std::uint64_t networkEntityId, const PlayerAppearance& appearance)
+    {
+        if (networkEntityId == 0 || !appearance.valid || appearance.revision == 0) return;
+        std::scoped_lock lock(g_mutex);
+        ProxyCommand command;
+        command.kind = ProxyCommandKind::Appearance;
+        command.networkEntityId = networkEntityId;
+        command.appearance = appearance;
         QueueLocked(std::move(command));
     }
 
@@ -357,9 +538,14 @@ namespace SkyrimMP
                     RetireActiveProxy(command.networkEntityId, "server despawn");
                     ++applied;
                 }
+                g_appearances.erase(command.networkEntityId);
                 continue;
             }
-
+            if (command.kind == ProxyCommandKind::Appearance) {
+                ApplyAppearance(command.networkEntityId, command.appearance);
+                ++applied;
+                continue;
+            }
             ApplyUpsert(command.update);
             ++applied;
         }
@@ -371,6 +557,7 @@ namespace SkyrimMP
         std::scoped_lock lock(g_mutex);
         g_order.clear();
         g_pending.clear();
+        g_appearances.clear();
 
         std::vector<std::uint64_t> activeIds;
         activeIds.reserve(g_proxies.size());
