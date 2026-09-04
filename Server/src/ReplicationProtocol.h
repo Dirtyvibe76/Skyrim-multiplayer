@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RuntimeEntityRegistry.h"
+#include "PlayerState.h"
 
 #include <cstdint>
 #include <unordered_map>
@@ -8,7 +9,7 @@
 
 namespace SkyrimMP::Server
 {
-    constexpr std::uint16_t kReplicationProtocolVersion = 8;
+    constexpr std::uint16_t kReplicationProtocolVersion = 9;
 
     enum class ReplicationMessageKind : std::uint8_t
     {
@@ -33,6 +34,7 @@ namespace SkyrimMP::Server
         bool inCombat{};
         bool hasActorState{};
         bool hasStatusState{};
+        PlayerAppearance appearance;
         std::uint16_t actionFlags{};
         std::vector<std::uint32_t> equippedFormIds;
     };
@@ -64,6 +66,7 @@ namespace SkyrimMP::Server
         bool hasActorState{};
         bool hasStatusState{};
         bool hasEquipmentState{};
+        PlayerAppearance appearance;
         std::uint16_t actionFlags{};
         std::vector<std::uint32_t> equippedFormIds;
         std::int32_t exteriorRadiusCells{ 1 };
