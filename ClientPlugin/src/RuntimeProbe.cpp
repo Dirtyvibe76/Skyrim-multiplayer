@@ -21,8 +21,6 @@ namespace SkyrimMP
                 return saves->currentCharacterID;
             }
 
-            // Older/edge runtimes can briefly expose no save-manager ID. Keep
-            // a stable fallback based on immutable character-creation traits.
             constexpr std::uint64_t offset = 14695981039346656037ull;
             constexpr std::uint64_t prime = 1099511628211ull;
             auto hash = offset;
@@ -33,9 +31,7 @@ namespace SkyrimMP
                 hash = (hash ^ c) * prime;
             }
             if (const auto* race = player.GetRace()) hash = (hash ^ race->GetFormID()) * prime;
-            if (const auto* base = player.GetActorBase()) {
-                hash = (hash ^ static_cast<std::uint64_t>(base->GetSex())) * prime;
-            }
+            if (const auto* base = player.GetActorBase()) hash = (hash ^ static_cast<std::uint64_t>(base->GetSex())) * prime;
             return hash == 0 ? 1 : hash;
         }
 
@@ -44,7 +40,7 @@ namespace SkyrimMP
             constexpr std::uint64_t offset = 14695981039346656037ull;
             constexpr std::uint64_t prime = 1099511628211ull;
             auto hash = offset;
-            const auto mix = [&](std::uint64_t value) mutable {
+            const auto mix = [&](std::uint64_t value) {
                 for (std::size_t i = 0; i < sizeof(value); ++i) {
                     hash = (hash ^ static_cast<std::uint8_t>(value >> (i * 8))) * prime;
                 }
@@ -104,36 +100,21 @@ namespace SkyrimMP
     PlayerState RuntimeProbe::ReadLocalPlayer()
     {
         PlayerState state{};
-
         auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player) {
-            return state;
-        }
+        if (!player) return state;
 
         state.characterId = CharacterId(*player);
         state.formId = player->GetFormID();
         state.appearance = CaptureAppearance(*player);
 
         const auto position = player->GetPosition();
-        state.position = {
-            position.x,
-            position.y,
-            position.z
-        };
-
+        state.position = { position.x, position.y, position.z };
         const auto angle = player->GetAngle();
-        state.rotation = {
-            angle.x,
-            angle.y,
-            angle.z
-        };
+        state.rotation = { angle.x, angle.y, angle.z };
 
         if (auto* cell = player->GetParentCell()) {
             state.cellFormId = cell->GetFormID();
-
-            if (auto* worldspace = cell->GetRuntimeData().worldSpace) {
-                state.worldspaceFormId = worldspace->GetFormID();
-            }
+            if (auto* worldspace = cell->GetRuntimeData().worldSpace) state.worldspaceFormId = worldspace->GetFormID();
         }
 
         const auto gameplay = GameplayEventProbe::Snapshot();
@@ -152,7 +133,6 @@ namespace SkyrimMP
         bool casting = false;
         if (player->GetGraphVariableBool("IsCasting", casting) && casting) state.actionFlags |= kCasting;
         state.equippedFormIds = gameplay.equippedFormIds;
-
         return state;
     }
 
@@ -190,42 +170,20 @@ namespace SkyrimMP
             state.equippedFormIds != previous.equippedFormIds ||
             state.appearance.revision != previous.appearance.revision;
 
-        if (!changed) {
-            return;
-        }
+        if (!changed) return;
 
         logs::info(
-            "[PLAYER] form={:08X} cell={:08X} world={:08X} "
-            "pos=({:.2f},{:.2f},{:.2f}) "
-            "rot=({:.3f},{:.3f},{:.3f})",
-            state.formId,
-            state.cellFormId,
-            state.worldspaceFormId,
-            state.position.x,
-            state.position.y,
-            state.position.z,
-            state.rotation.x,
-            state.rotation.y,
-            state.rotation.z);
+            "[PLAYER] form={:08X} cell={:08X} world={:08X} pos=({:.2f},{:.2f},{:.2f}) rot=({:.3f},{:.3f},{:.3f})",
+            state.formId, state.cellFormId, state.worldspaceFormId,
+            state.position.x, state.position.y, state.position.z,
+            state.rotation.x, state.rotation.y, state.rotation.z);
 
         if (!firstSample) {
-            if (state.cellFormId != previous.cellFormId) {
-                logs::info(
-                    "[CELL CHANGE] {:08X} -> {:08X}",
-                    previous.cellFormId,
-                    state.cellFormId);
-            }
-
-            if (state.worldspaceFormId != previous.worldspaceFormId) {
-                logs::info(
-                    "[WORLDSPACE CHANGE] {:08X} -> {:08X}",
-                    previous.worldspaceFormId,
-                    state.worldspaceFormId);
-            }
+            if (state.cellFormId != previous.cellFormId) logs::info("[CELL CHANGE] {:08X} -> {:08X}", previous.cellFormId, state.cellFormId);
+            if (state.worldspaceFormId != previous.worldspaceFormId) logs::info("[WORLDSPACE CHANGE] {:08X} -> {:08X}", previous.worldspaceFormId, state.worldspaceFormId);
         }
 
         previous = state;
         firstSample = false;
     }
-
 }
