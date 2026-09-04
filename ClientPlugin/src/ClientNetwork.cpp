@@ -8,6 +8,7 @@
 #include <bit>
 #include <chrono>
 #include <cstdint>
+#include <fstream>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -80,6 +81,33 @@ namespace SkyrimMP
         std::mutex g_playerMutex;
         PlayerState g_player{};
         bool g_hasPlayer = false;
+
+        struct ServerTarget
+        {
+            std::string address{ "127.0.0.1" };
+            std::uint16_t port{ kServerPort };
+        };
+
+        ServerTarget ReadServerTarget()
+        {
+            ServerTarget target;
+            std::ifstream input("Data/SKSE/Plugins/SkyrimMPClient.ini");
+            std::string line;
+            while (std::getline(input, line)) {
+                const auto equals = line.find('=');
+                if (equals == std::string::npos) continue;
+                const auto key = line.substr(0, equals);
+                const auto value = line.substr(equals + 1);
+                if (key == "Address" && !value.empty()) target.address = value;
+                if (key == "Port") {
+                    try {
+                        const auto parsed = std::stoul(value);
+                        if (parsed > 0 && parsed <= 65535) target.port = static_cast<std::uint16_t>(parsed);
+                    } catch (...) {}
+                }
+            }
+            return target;
+        }
 
         template <class T>
         void Append(std::vector<std::uint8_t>& out, T value)
@@ -458,10 +486,17 @@ namespace SkyrimMP
                 return;
             }
 
+            const auto target = ReadServerTarget();
             sockaddr_in server{};
             server.sin_family = AF_INET;
-            server.sin_port = htons(kServerPort);
-            server.sin_addr.s_addr = inet_addr("127.0.0.1");
+            server.sin_port = htons(target.port);
+            server.sin_addr.s_addr = inet_addr(target.address.c_str());
+            if (server.sin_addr.s_addr == INADDR_NONE) {
+                logs::error("[NET-CLIENT] invalid configured server IPv4={}", target.address);
+                closesocket(socketValue);
+                WSACleanup();
+                return;
+            }
 
             std::uint64_t nonce = 0;
             std::uint64_t sessionId = 0;
@@ -500,7 +535,7 @@ namespace SkyrimMP
                 logs::warn("[NET-CLIENT] session reset reason={}; reconnecting", reason);
             };
 
-            logs::info("[NET-CLIENT] worker started server=127.0.0.1:{} protocol={} revision={} waitingForLoadedCharacter=true worldBootstrap=server remotePlayerProxies=63 tombstones=true", kServerPort, kReplicationProtocolVersion, kLoadOrderRevision);
+            logs::info("[NET-CLIENT] worker started server={}:{} protocol={} revision={} waitingForLoadedCharacter=true worldBootstrap=server remotePlayerProxies=63 tombstones=true", target.address, target.port, kReplicationProtocolVersion, kLoadOrderRevision);
 
             while (!stop.stop_requested() && g_running.load(std::memory_order_relaxed)) {
                 const auto now = std::chrono::steady_clock::now();

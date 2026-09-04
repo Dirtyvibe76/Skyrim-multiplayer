@@ -30,7 +30,6 @@ internal sealed class LauncherForm : Form
     private readonly Label _status = new() { AutoSize = true, Text = "Choose this PC's Skyrim Special Edition folder." };
     private readonly string _configPath;
     private readonly CancellationTokenSource _shutdown = new();
-    private Task? _relayTask;
     private bool _launching;
 
     public LauncherForm()
@@ -194,10 +193,10 @@ internal sealed class LauncherForm : Form
                 if (!File.Exists(enabled)) throw new InvalidOperationException("SkyrimMultiplayer.dll is not installed.");
 
                 var ip = await ResolveServerAddressAsync(config.ServerAddress, _shutdown.Token);
-
-                _shutdown.CancelAfter(Timeout.InfiniteTimeSpan);
-                _relayTask = RunRelayAsync(ip, config.ServerPort, _shutdown.Token);
-            _status.Text = $"{BuildInfo.Display}. Relay: 127.0.0.1:10578 -> {ip}:{config.ServerPort}. Load SkyrimMP_* (or a post-Helgen save for first import).";
+                File.WriteAllText(
+                    Path.Combine(pluginDir, "SkyrimMPClient.ini"),
+                    $"[Server]{Environment.NewLine}Address={ip}{Environment.NewLine}Port={config.ServerPort}{Environment.NewLine}");
+                _status.Text = $"{BuildInfo.Display}. Direct server: {ip}:{config.ServerPort}. Load SkyrimMP_* (or a post-Helgen save for first import).";
             }
             else
             {
@@ -290,31 +289,4 @@ internal sealed class LauncherForm : Form
         File.Copy(bundled, Path.Combine(pluginDir, "SkyrimMultiplayer.dll"), true);
     }
 
-    private static async Task RunRelayAsync(IPAddress serverAddress, int serverPort, CancellationToken token)
-    {
-        using var local = new UdpClient(new IPEndPoint(IPAddress.Loopback, 10578));
-        using var upstream = new UdpClient();
-        var server = new IPEndPoint(serverAddress, serverPort);
-        IPEndPoint? client = null;
-
-        while (!token.IsCancellationRequested)
-        {
-            var localReceive = local.ReceiveAsync(token).AsTask();
-            var upstreamReceive = upstream.ReceiveAsync(token).AsTask();
-            var completed = await Task.WhenAny(localReceive, upstreamReceive);
-
-            if (completed == localReceive)
-            {
-                var packet = await localReceive;
-                client = packet.RemoteEndPoint;
-                await upstream.SendAsync(packet.Buffer, server, token);
-            }
-            else
-            {
-                var packet = await upstreamReceive;
-                if (client is not null)
-                    await local.SendAsync(packet.Buffer, client, token);
-            }
-        }
-    }
 }
