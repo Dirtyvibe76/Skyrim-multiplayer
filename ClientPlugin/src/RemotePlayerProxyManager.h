@@ -30,6 +30,7 @@ namespace SkyrimMP
     {
     public:
         static void EnqueueUpsert(const RemotePlayerProxyUpdate& a_update);
+        static void EnqueueAppearance(std::uint64_t a_networkEntityId, const PlayerAppearance& a_appearance);
         static void EnqueueDespawn(std::uint64_t a_networkEntityId);
         static std::size_t ApplyPending(std::size_t a_budget = 8);
         static void Reset();
