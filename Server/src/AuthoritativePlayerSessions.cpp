@@ -18,6 +18,9 @@ namespace SkyrimMP::Server
 {
     namespace
     {
+        constexpr std::size_t kMaxAppearanceName = 63;
+        constexpr std::size_t kMaxAppearanceHeadParts = 32;
+
         std::string EndpointText(const NetworkEndpoint& endpoint)
         {
             const auto* octets = reinterpret_cast<const std::uint8_t*>(&endpoint.address);
@@ -44,6 +47,13 @@ namespace SkyrimMP::Server
             AppendIntegral(out, std::bit_cast<std::uint32_t>(value));
         }
 
+        void AppendString8(std::vector<std::uint8_t>& out, const std::string& value)
+        {
+            if (value.size() > kMaxAppearanceName) throw std::runtime_error("appearance name exceeds server limit");
+            AppendIntegral(out, static_cast<std::uint8_t>(value.size()));
+            out.insert(out.end(), value.begin(), value.end());
+        }
+
         template <class T>
         T ReadIntegral(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
         {
@@ -64,7 +74,9 @@ namespace SkyrimMP::Server
         std::string ReadString8(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
         {
             const auto length = ReadIntegral<std::uint8_t>(bytes, offset);
-            if (offset + length > bytes.size()) throw std::runtime_error("authoritative session string truncated");
+            if (length > kMaxAppearanceName || offset + length > bytes.size()) {
+                throw std::runtime_error("authoritative session string invalid");
+            }
             std::string value(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
                 bytes.begin() + static_cast<std::ptrdiff_t>(offset + length));
             offset += length;
@@ -93,7 +105,7 @@ namespace SkyrimMP::Server
         {
             const auto kind = ReadIntegral<std::uint8_t>(bytes, offset);
             if (kind < static_cast<std::uint8_t>(SessionControlKind::Hello) ||
-                kind > static_cast<std::uint8_t>(SessionControlKind::WorldBootstrap)) {
+                kind > static_cast<std::uint8_t>(SessionControlKind::AppearanceProfile)) {
                 throw std::runtime_error("authoritative session control kind invalid");
             }
             return static_cast<SessionControlKind>(kind);
@@ -112,6 +124,72 @@ namespace SkyrimMP::Server
             AppendIntegral(out, sessionId);
             AppendIntegral(out, nonce);
             AppendIntegral(out, maxPlayers);
+            return out;
+        }
+
+        bool ValidAppearance(const PlayerAppearance& appearance)
+        {
+            if (!appearance.valid || appearance.revision == 0 || appearance.displayName.size() > kMaxAppearanceName ||
+                appearance.raceFormId == 0 || appearance.sex > 1 || !std::isfinite(appearance.weight) ||
+                appearance.weight < 0.0f || appearance.weight > 100.0f ||
+                appearance.headPartFormIds.size() > kMaxAppearanceHeadParts) {
+                return false;
+            }
+            if (std::any_of(appearance.headPartFormIds.begin(), appearance.headPartFormIds.end(), [](auto id) { return id == 0; })) {
+                return false;
+            }
+            for (const auto morph : appearance.faceMorphs) {
+                if (!std::isfinite(morph) || std::abs(morph) > 100.0f) return false;
+            }
+            return true;
+        }
+
+        PlayerAppearance DecodeAppearanceProfile(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
+        {
+            PlayerAppearance appearance;
+            appearance.valid = true;
+            appearance.revision = ReadIntegral<std::uint64_t>(bytes, offset);
+            appearance.displayName = ReadString8(bytes, offset);
+            appearance.raceFormId = ReadIntegral<std::uint32_t>(bytes, offset);
+            appearance.sex = ReadIntegral<std::uint8_t>(bytes, offset);
+            appearance.weight = ReadFloat(bytes, offset);
+            appearance.hairColorFormId = ReadIntegral<std::uint32_t>(bytes, offset);
+            appearance.faceDetailsFormId = ReadIntegral<std::uint32_t>(bytes, offset);
+            appearance.bodyTintColor = ReadIntegral<std::uint32_t>(bytes, offset);
+            const auto headPartCount = ReadIntegral<std::uint8_t>(bytes, offset);
+            if (headPartCount > kMaxAppearanceHeadParts) throw std::runtime_error("appearance head-part count invalid");
+            appearance.headPartFormIds.reserve(headPartCount);
+            for (std::uint8_t i = 0; i < headPartCount; ++i) {
+                appearance.headPartFormIds.push_back(ReadIntegral<std::uint32_t>(bytes, offset));
+            }
+            for (auto& morph : appearance.faceMorphs) morph = ReadFloat(bytes, offset);
+            for (auto& part : appearance.faceParts) part = ReadIntegral<std::int32_t>(bytes, offset);
+            if (!ValidAppearance(appearance)) throw std::runtime_error("appearance profile failed validation");
+            return appearance;
+        }
+
+        std::vector<std::uint8_t> EncodeAppearanceProfile(
+            std::uint64_t recipientSessionId,
+            NetworkEntityId playerEntityId,
+            const PlayerAppearance& appearance)
+        {
+            if (!ValidAppearance(appearance)) throw std::runtime_error("cannot encode invalid appearance profile");
+            std::vector<std::uint8_t> out;
+            AppendIntegral(out, static_cast<std::uint8_t>(SessionControlKind::AppearanceProfile));
+            AppendIntegral(out, recipientSessionId);
+            AppendIntegral(out, playerEntityId);
+            AppendIntegral(out, appearance.revision);
+            AppendString8(out, appearance.displayName);
+            AppendIntegral(out, appearance.raceFormId);
+            AppendIntegral(out, appearance.sex);
+            AppendFloat(out, appearance.weight);
+            AppendIntegral(out, appearance.hairColorFormId);
+            AppendIntegral(out, appearance.faceDetailsFormId);
+            AppendIntegral(out, appearance.bodyTintColor);
+            AppendIntegral(out, static_cast<std::uint8_t>(appearance.headPartFormIds.size()));
+            for (const auto formId : appearance.headPartFormIds) AppendIntegral(out, formId);
+            for (const auto morph : appearance.faceMorphs) AppendFloat(out, morph);
+            for (const auto part : appearance.faceParts) AppendIntegral(out, part);
             return out;
         }
 
@@ -211,14 +289,13 @@ namespace SkyrimMP::Server
             ClientInterestSubscription interest;
             interest.location = player.location;
             interest.transform = player.transform;
+            interest.appearance = player.appearance;
             interest.exteriorRadiusCells = 1;
             return interest;
         }
 
         const RuntimeEntityState* FindRiverwoodSpawn(const RuntimeEntityRegistry& registry)
         {
-            // Skyrim.esm's persistent Riverwood map marker. Moving to this
-            // reference loads the correct Tamriel exterior cell on the client.
             const CanonicalRecordKey riverwoodMarker{
                 FormNamespaceKind::Full,
                 0,
@@ -303,7 +380,7 @@ namespace SkyrimMP::Server
                 >> state.transform.x >> state.transform.y >> state.transform.z
                 >> state.transform.pitch >> state.transform.yaw >> state.transform.roll
                 >> state.health >> state.magicka >> state.stamina >> dead >> inCombat >> hasActor) ||
-            (version != 1 && version != 2) || exterior > 1 || hasCell > 1 || hasWorld > 1 || cellKind > 1 || worldKind > 1 ||
+            (version != 1 && version != 2 && version != 3) || exterior > 1 || hasCell > 1 || hasWorld > 1 || cellKind > 1 || worldKind > 1 ||
             dead > 1 || inCombat > 1 || hasActor > 1) {
             throw std::runtime_error("persisted player state is malformed");
         }
@@ -343,6 +420,39 @@ namespace SkyrimMP::Server
                 throw std::runtime_error("persisted player equipment is invalid");
             }
         }
+
+        if (version >= 3) {
+            unsigned appearanceValid{};
+            if (!(input >> appearanceValid) || appearanceValid > 1) throw std::runtime_error("persisted appearance validity is malformed");
+            if (appearanceValid != 0) {
+                auto& appearance = state.appearance;
+                appearance.valid = true;
+                unsigned sex{};
+                unsigned headPartCount{};
+                if (!(input >> appearance.revision >> std::quoted(appearance.displayName)
+                        >> appearance.raceFormId >> sex >> appearance.weight
+                        >> appearance.hairColorFormId >> appearance.faceDetailsFormId >> appearance.bodyTintColor
+                        >> headPartCount) ||
+                    sex > 1 || headPartCount > kMaxAppearanceHeadParts) {
+                    throw std::runtime_error("persisted appearance header is malformed");
+                }
+                appearance.sex = static_cast<std::uint8_t>(sex);
+                appearance.headPartFormIds.reserve(headPartCount);
+                for (unsigned i = 0; i < headPartCount; ++i) {
+                    std::uint32_t formId{};
+                    if (!(input >> formId)) throw std::runtime_error("persisted appearance head part is malformed");
+                    appearance.headPartFormIds.push_back(formId);
+                }
+                for (auto& morph : appearance.faceMorphs) {
+                    if (!(input >> morph)) throw std::runtime_error("persisted appearance morph is malformed");
+                }
+                for (auto& part : appearance.faceParts) {
+                    if (!(input >> part)) throw std::runtime_error("persisted appearance part is malformed");
+                }
+                if (!ValidAppearance(appearance)) throw std::runtime_error("persisted appearance failed validation");
+            }
+        }
+
         state.exteriorRadiusCells = 1;
         if (!state.location.hasCell || (state.location.exterior && !state.location.hasWorldspace) ||
             !FiniteTransform(state.transform) || (state.hasActorState && !ValidActorState(state))) {
@@ -363,7 +473,7 @@ namespace SkyrimMP::Server
             std::ofstream output(temporary, std::ios::trunc);
             if (!output) throw std::runtime_error("failed to open player-state temporary file");
             output << std::setprecision(9)
-                   << 2 << ' ' << player.location.exterior << ' ' << player.location.hasCell << ' ' << player.location.hasWorldspace << ' '
+                   << 3 << ' ' << player.location.exterior << ' ' << player.location.hasCell << ' ' << player.location.hasWorldspace << ' '
                    << (player.location.cell.kind == FormNamespaceKind::Light) << ' ' << player.location.cell.namespaceIndex << ' ' << player.location.cell.localId << ' '
                    << (player.location.worldspace.kind == FormNamespaceKind::Light) << ' ' << player.location.worldspace.namespaceIndex << ' ' << player.location.worldspace.localId << ' '
                    << player.transform.x << ' ' << player.transform.y << ' ' << player.transform.z << ' '
@@ -372,6 +482,23 @@ namespace SkyrimMP::Server
                    << player.dead << ' ' << player.inCombat << ' ' << player.hasActorState << ' ' << player.hasStatusState << ' ' << player.actionFlags
                    << ' ' << player.equippedFormIds.size();
             for (const auto formId : player.equippedFormIds) output << ' ' << formId;
+
+            output << ' ' << player.appearance.valid;
+            if (player.appearance.valid) {
+                if (!ValidAppearance(player.appearance)) throw std::runtime_error("cannot persist invalid player appearance");
+                output << ' ' << player.appearance.revision
+                       << ' ' << std::quoted(player.appearance.displayName)
+                       << ' ' << player.appearance.raceFormId
+                       << ' ' << static_cast<unsigned>(player.appearance.sex)
+                       << ' ' << player.appearance.weight
+                       << ' ' << player.appearance.hairColorFormId
+                       << ' ' << player.appearance.faceDetailsFormId
+                       << ' ' << player.appearance.bodyTintColor
+                       << ' ' << player.appearance.headPartFormIds.size();
+                for (const auto formId : player.appearance.headPartFormIds) output << ' ' << formId;
+                for (const auto morph : player.appearance.faceMorphs) output << ' ' << morph;
+                for (const auto part : player.appearance.faceParts) output << ' ' << part;
+            }
             output << '\n';
             if (!output) throw std::runtime_error("failed to write player-state temporary file");
         }
@@ -385,6 +512,22 @@ namespace SkyrimMP::Server
 
     void ServerSessionManager::ProcessAuthoritativeControlPackets(NetworkTransport& transport, RuntimeEntityRegistry& registry)
     {
+        const auto sendAppearance = [&](AuthenticatedClientSession& recipient, NetworkEntityId entityId, const PlayerAppearance& appearance) {
+            if (!recipient.hasPlayerEntity || !ValidAppearance(appearance)) return;
+            transport.SendControl(
+                recipient.endpoint,
+                WireChannel::Reliable,
+                EncodeAppearanceProfile(recipient.sessionId, entityId, appearance));
+            ++stats_.appearanceProfilesSent;
+        };
+
+        const auto broadcastAppearance = [&](const NetworkEndpoint& ownerEndpoint, NetworkEntityId entityId, const PlayerAppearance& appearance) {
+            for (auto& [endpoint, recipient] : sessions_) {
+                if (endpoint == ownerEndpoint) continue;
+                sendAppearance(recipient, entityId, appearance);
+            }
+        };
+
         for (const auto& incoming : transport.DrainControlPackets()) {
             try {
                 std::size_t offset = 0;
@@ -471,6 +614,38 @@ namespace SkyrimMP::Server
                     continue;
                 }
 
+                if (kind == SessionControlKind::AppearanceProfile) {
+                    auto appearance = DecodeAppearanceProfile(incoming.payload, offset);
+                    EnsureConsumed(incoming.payload, offset);
+                    session.lastHeartbeat = std::chrono::steady_clock::now();
+                    ++stats_.appearanceProfilesReceived;
+
+                    const bool changed = !session.hasAppearance || session.appearance.revision != appearance.revision;
+                    session.appearance = appearance;
+                    session.hasAppearance = true;
+
+                    if (session.hasPlayerEntity) {
+                        const auto playerIt = registry.entities.find(session.playerEntityId);
+                        if (playerIt == registry.entities.end()) throw std::runtime_error("appearance player entity missing");
+                        playerIt->second.appearance = appearance;
+                        session.playerStateDirty = true;
+                        if (changed) broadcastAppearance(incoming.endpoint, session.playerEntityId, appearance);
+                    }
+
+                    if (changed) {
+                        std::cout << "[APPEARANCE-RECEIVE] endpoint=" << EndpointText(incoming.endpoint)
+                                  << " session=" << session.sessionId
+                                  << " character=" << session.clientNonce
+                                  << " entity=" << (session.hasPlayerEntity ? session.playerEntityId : 0)
+                                  << " revision=" << appearance.revision
+                                  << " name=\"" << appearance.displayName << "\""
+                                  << " race=" << appearance.raceFormId
+                                  << " sex=" << static_cast<unsigned>(appearance.sex)
+                                  << " headParts=" << appearance.headPartFormIds.size() << '\n';
+                    }
+                    continue;
+                }
+
                 if (kind == SessionControlKind::BootstrapRequest) {
                     const auto requested = DecodePlayerStateRequest(incoming.payload, offset);
                     EnsureConsumed(incoming.payload, offset);
@@ -519,6 +694,17 @@ namespace SkyrimMP::Server
                         if (!UpdateRuntimeActionState(registry, session.playerEntityId, actorState.actionFlags)) {
                             throw std::runtime_error("authoritative player initial action state failed");
                         }
+
+                        auto spawnedIt = registry.entities.find(session.playerEntityId);
+                        if (spawnedIt == registry.entities.end()) throw std::runtime_error("spawned player entity missing");
+                        if (session.hasAppearance) {
+                            spawnedIt->second.appearance = session.appearance;
+                        } else if (persisted && persisted->appearance.valid) {
+                            session.appearance = persisted->appearance;
+                            session.hasAppearance = true;
+                            spawnedIt->second.appearance = persisted->appearance;
+                        }
+
                         session.bootstrapAnchor = riverwood ? riverwood->sourceRecord :
                             (persisted && !SameLocationContext(persisted->location, requested.location) ?
                                 FindTransferAnchor(registry, persisted->location, persisted->transform) : CanonicalRecordKey{});
@@ -535,19 +721,14 @@ namespace SkyrimMP::Server
                                   << " entity=" << session.playerEntityId
                                   << " firstLogin=" << static_cast<bool>(riverwood)
                                   << " restored=" << persisted.has_value()
-                                  << " equipment=" << actorState.equippedFormIds.size() << '\n';
-                        if (riverwood) {
-                            ++stats_.riverwoodFirstLogins;
-                        }
+                                  << " equipment=" << actorState.equippedFormIds.size()
+                                  << " appearance=" << session.hasAppearance << '\n';
+                        if (riverwood) ++stats_.riverwoodFirstLogins;
                     }
 
                     const auto playerIt = registry.entities.find(session.playerEntityId);
-                    if (playerIt == registry.entities.end()) {
-                        throw std::runtime_error("authoritative bootstrap player entity missing");
-                    }
-                    if (!session.hasBootstrapAnchor) {
-                        throw std::runtime_error("authoritative bootstrap anchor missing");
-                    }
+                    if (playerIt == registry.entities.end()) throw std::runtime_error("authoritative bootstrap player entity missing");
+                    if (!session.hasBootstrapAnchor) throw std::runtime_error("authoritative bootstrap anchor missing");
 
                     session.interest = InterestFromPlayer(playerIt->second);
                     session.hasInterest = true;
@@ -560,6 +741,16 @@ namespace SkyrimMP::Server
                             session.bootstrapAnchor,
                             playerIt->second));
                     ++stats_.bootstrapAssignments;
+
+                    // Couple profile delivery to bootstrap/spawn without putting
+                    // appearance bytes in high-frequency replication snapshots.
+                    for (auto& [endpoint, other] : sessions_) {
+                        if (endpoint == incoming.endpoint || !other.hasPlayerEntity || !other.hasAppearance) continue;
+                        sendAppearance(session, other.playerEntityId, other.appearance);
+                    }
+                    if (session.hasAppearance) {
+                        broadcastAppearance(incoming.endpoint, session.playerEntityId, session.appearance);
+                    }
                     continue;
                 }
 
@@ -574,8 +765,6 @@ namespace SkyrimMP::Server
                 EnsureConsumed(incoming.payload, offset);
                 session.lastHeartbeat = std::chrono::steady_clock::now();
 
-                // Protocol v4 creates the authoritative player during BootstrapRequest;
-                // subsequent state reports may only update that server-owned entity.
                 if (!session.hasPlayerEntity || !FiniteTransform(requested.transform) ||
                     (requested.hasActorState && !ValidActorState(requested))) {
                     ++stats_.playerStateRejected;
@@ -587,9 +776,7 @@ namespace SkyrimMP::Server
                 }
 
                 const auto playerIt = registry.entities.find(session.playerEntityId);
-                if (playerIt == registry.entities.end()) {
-                    throw std::runtime_error("authoritative player entity missing during update");
-                }
+                if (playerIt == registry.entities.end()) throw std::runtime_error("authoritative player entity missing during update");
                 if (!ReasonableRequestedMove(playerIt->second, requested)) {
                     ++stats_.playerStateRejected;
                     std::cerr << "[PLAYER-STATE-REJECT] endpoint=" << EndpointText(incoming.endpoint)
@@ -618,9 +805,6 @@ namespace SkyrimMP::Server
                 }
                 ++stats_.playerStateApplied;
 
-                // The first accepted post-bootstrap state proves that the client
-                // completed the Riverwood transfer and created its MP branch save.
-                // Persist only now so a crash during loading can retry onboarding.
                 if (session.firstLogin) {
                     MarkFirstLoginComplete(session.clientNonce);
                     session.firstLogin = false;
@@ -628,6 +812,8 @@ namespace SkyrimMP::Server
 
                 const auto updatedPlayerIt = registry.entities.find(session.playerEntityId);
                 if (updatedPlayerIt == registry.entities.end()) throw std::runtime_error("authoritative player missing after apply");
+                if (session.hasAppearance) updatedPlayerIt->second.appearance = session.appearance;
+
                 if (updatedPlayerIt->second.actionFlags != previousActionFlags) {
                     std::cout << "[PLAYER-ACTION] endpoint=" << EndpointText(incoming.endpoint)
                               << " session=" << session.sessionId << " character=" << session.clientNonce
