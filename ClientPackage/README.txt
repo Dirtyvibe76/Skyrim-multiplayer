@@ -5,7 +5,7 @@ This is PLAYABLE ALPHA 0.1.0-alpha.3. It is not a finished multiplayer release.
 
 Package channel: re-0.1-runtime-probe
 Wire protocol: 2
-Replication protocol: 8
+Replication protocol: 9
 
 The launcher, client log, and server startup log must all show this same version
 and protocol pair. Do not mix artifacts from different workflow runs.
