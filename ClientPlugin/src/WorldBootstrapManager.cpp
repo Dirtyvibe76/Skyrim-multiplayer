@@ -13,12 +13,14 @@ namespace SkyrimMP
     {
         std::mutex g_mutex;
         std::optional<ServerWorldBootstrap> g_pending;
+        std::atomic_bool g_networkReady{ false };
         std::atomic_bool g_applied{ false };
         std::uint64_t g_appliedPlayerEntityId{};
         bool g_characterCreatorRequested{};
         bool g_characterCreatorObservedOpen{};
         std::uint32_t g_characterCreatorAttempts{};
         std::chrono::steady_clock::time_point g_lastCharacterCreatorRequest{};
+        std::chrono::steady_clock::time_point g_worldContextReadyAt{};
 
         bool ContextMatches(const ServerWorldBootstrap& bootstrap, RE::PlayerCharacter* player)
         {
@@ -82,7 +84,8 @@ namespace SkyrimMP
                 // showracemenu is dispatched through Skyrim's script command
                 // machinery and can be delayed while the Riverwood transfer is
                 // still settling. Retry a bounded number of times instead of
-                // leaving multiplayer bootstrap permanently stuck.
+                // leaving multiplayer onboarding permanently stuck. Networking
+                // is already active at this point and is not gated by this UI.
                 if (g_characterCreatorAttempts < 3 && now - g_lastCharacterCreatorRequest >= std::chrono::seconds(2)) {
                     if (RunShowRaceMenu(player)) {
                         ++g_characterCreatorAttempts;
@@ -135,28 +138,27 @@ namespace SkyrimMP
         auto* player = RE::PlayerCharacter::GetSingleton();
         if (!player) return 0;
 
-        if (bootstrap.anchorRuntimeFormId != 0) {
-            auto* anchorForm = RE::TESForm::LookupByID(bootstrap.anchorRuntimeFormId);
-            auto* anchor = anchorForm ? anchorForm->As<RE::TESObjectREFR>() : nullptr;
-            if (!anchor) {
-                logs::warn("[WORLD BOOTSTRAP WAIT] anchor={:08X} reason=reference unavailable", bootstrap.anchorRuntimeFormId);
+        const bool networkReady = g_networkReady.load(std::memory_order_acquire);
+
+        if (!networkReady) {
+            if (bootstrap.anchorRuntimeFormId != 0) {
+                auto* anchorForm = RE::TESForm::LookupByID(bootstrap.anchorRuntimeFormId);
+                auto* anchor = anchorForm ? anchorForm->As<RE::TESObjectREFR>() : nullptr;
+                if (!anchor) {
+                    logs::warn("[WORLD BOOTSTRAP WAIT] anchor={:08X} reason=reference unavailable", bootstrap.anchorRuntimeFormId);
+                    return 0;
+                }
+
+                if (!ContextMatches(bootstrap, player)) {
+                    player->MoveTo(anchor);
+                }
+            } else if (!ContextMatches(bootstrap, player)) {
+                logs::warn(
+                    "[WORLD BOOTSTRAP WAIT] playerEntity={:016X} reason=local context not ready",
+                    bootstrap.playerEntityId);
                 return 0;
             }
 
-            // Move only until the first-login context has actually been reached.
-            // Once RaceSex Menu is open, repeatedly calling MoveTo would disturb
-            // the character creator camera and its temporary player state.
-            if (!ContextMatches(bootstrap, player) && !g_characterCreatorRequested) {
-                player->MoveTo(anchor);
-            }
-        } else if (!ContextMatches(bootstrap, player)) {
-            logs::warn(
-                "[WORLD BOOTSTRAP WAIT] playerEntity={:016X} reason=local context not ready",
-                bootstrap.playerEntityId);
-            return 0;
-        }
-
-        if (!g_characterCreatorRequested) {
             player->SetPosition(RE::NiPoint3{
                 bootstrap.position.x,
                 bootstrap.position.y,
@@ -166,20 +168,40 @@ namespace SkyrimMP
             player->data.angle.y = bootstrap.rotation.y;
             player->data.angle.z = bootstrap.rotation.z;
             player->Update3DPosition(true);
-        }
 
-        if (!ContextMatches(bootstrap, player)) {
-            logs::warn(
-                "[WORLD BOOTSTRAP WAIT] playerEntity={:016X} anchor={:08X} reason=context transition pending",
+            if (!ContextMatches(bootstrap, player)) {
+                g_worldContextReadyAt = {};
+                logs::warn(
+                    "[WORLD BOOTSTRAP WAIT] playerEntity={:016X} anchor={:08X} reason=context transition pending",
+                    bootstrap.playerEntityId,
+                    bootstrap.anchorRuntimeFormId);
+                return 0;
+            }
+
+            // Give RuntimeProbe at least one normal PlayerCharacter::Update cycle
+            // after the transfer so g_player contains the authoritative Riverwood
+            // context before the network thread begins sending Interest packets.
+            const auto now = std::chrono::steady_clock::now();
+            if (g_worldContextReadyAt.time_since_epoch().count() == 0) {
+                g_worldContextReadyAt = now;
+                logs::info(
+                    "[WORLD BOOTSTRAP SETTLING] playerEntity={:016X} context reached; waiting for local state sample",
+                    bootstrap.playerEntityId);
+                return 0;
+            }
+            if (now - g_worldContextReadyAt < std::chrono::milliseconds(250)) return 0;
+
+            g_networkReady.store(true, std::memory_order_release);
+            logs::info(
+                "[WORLD BOOTSTRAP NETWORK READY] playerEntity={:016X} cell={:08X} world={:08X} replicationMayStart=true onboardingMayContinue=true",
                 bootstrap.playerEntityId,
-                bootstrap.anchorRuntimeFormId);
-            return 0;
+                bootstrap.cellFormId,
+                bootstrap.worldspaceFormId);
         }
 
-        // A non-zero anchor is the server's one-time onboarding assignment.
-        // Do not create the SkyrimMP save until the player has explicitly made
-        // their multiplayer character. This prevents an arbitrary single-player
-        // appearance from becoming the multiplayer identity by accident.
+        // First-login character creation is intentionally NOT a replication
+        // gate. The dedicated server, heartbeat, Interest updates and remote
+        // player replication remain live while this UI is open.
         if (bootstrap.anchorRuntimeFormId != 0 && !CompleteFirstLoginCharacterCreation(*player)) {
             return 0;
         }
@@ -206,7 +228,7 @@ namespace SkyrimMP
         }
 
         logs::info(
-            "[WORLD BOOTSTRAP APPLIED] playerEntity={:016X} anchor={:08X} cell={:08X} world={:08X} obsPos=({:.2f},{:.2f},{:.2f}) authority=server",
+            "[WORLD BOOTSTRAP APPLIED] playerEntity={:016X} anchor={:08X} cell={:08X} world={:08X} obsPos=({:.2f},{:.2f},{:.2f}) authority=server onboardingComplete=true",
             bootstrap.playerEntityId,
             bootstrap.anchorRuntimeFormId,
             bootstrap.cellFormId,
@@ -226,12 +248,16 @@ namespace SkyrimMP
         g_characterCreatorObservedOpen = false;
         g_characterCreatorAttempts = 0;
         g_lastCharacterCreatorRequest = {};
+        g_worldContextReadyAt = {};
+        g_networkReady.store(false, std::memory_order_release);
         g_applied.store(false, std::memory_order_release);
         logs::info("[WORLD BOOTSTRAP] reset");
     }
 
     bool WorldBootstrapManager::HasApplied()
     {
-        return g_applied.load(std::memory_order_acquire);
+        // Networking only needs the authoritative world placement to be stable.
+        // First-login character creation/save completion is a separate phase.
+        return g_networkReady.load(std::memory_order_acquire);
     }
 }
