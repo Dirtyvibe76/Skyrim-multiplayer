@@ -1,6 +1,6 @@
 # SkyrimMP playable-alpha two-PC test
 
-Build identity: **0.1.0-alpha.1**, wire protocol **2**, replication protocol **8**.
+Build identity: **0.1.0-alpha.2**, wire protocol **2**, replication protocol **8**.
 
 Both PCs run Skyrim SE/AE, matching SKSE, and the SkyrimMP client. Only one
 `SkyrimMPServer.exe` is started. Both launchers must point to that server's IPv4
@@ -23,7 +23,7 @@ Record PASS or FAIL and relevant log timestamps for every row.
 | # | Action | Expected result | Result / evidence |
 |---:|---|---|---|
 | 1 | Start the dedicated server. | Startup self-tests pass; UDP 10578 listens; version/protocol match. | |
-| 2 | Start PC 1 with **Join Multiplayer Server**. | Launcher relay starts and Skyrim opens through SKSE. | |
+| 2 | Start PC 1 with **Join Multiplayer Server**. | Launcher writes the direct server target and Skyrim opens through SKSE. | |
 | 3 | Load PC 1's post-Helgen save, or its existing `SkyrimMP_*` save. | First import moves to Riverwood and creates a separate MP save; later logins restore it without crashing. | |
 | 4 | Start PC 2 with **Join Multiplayer Server**. | It connects to the same dedicated server. | |
 | 5 | Load PC 2's distinct character/save. | A distinct `SkyrimMP_*` branch is created or restored. | |

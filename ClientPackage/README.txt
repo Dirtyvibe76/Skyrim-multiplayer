@@ -1,7 +1,7 @@
 SkyrimMultiplayer test client
 =============================
 
-This is PLAYABLE ALPHA 0.1.0-alpha.1. It is not a finished multiplayer release.
+This is PLAYABLE ALPHA 0.1.0-alpha.2. It is not a finished multiplayer release.
 
 Package channel: re-0.1-runtime-probe
 Wire protocol: 2
@@ -44,7 +44,7 @@ Join Multiplayer Server
   multiplayer login, the server moves that character to Riverwood and creates
   a separate SkyrimMP_<character-id> save. Continue multiplayer from that save;
   the original single-player save is preserved.
-- Starts the included local UDP relay.
+- Writes the chosen direct IPv4/UDP server target to the multiplayer client.
 - Launches Skyrim through skse64_loader.exe.
 - Uses the server IPv4 / hostname entered in the launcher.
 
