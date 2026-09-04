@@ -28,8 +28,17 @@ namespace SkyrimMP
         float z{};
     };
 
-    // Appearance uses runtime FormIDs on the client. The network layer converts
-    // stable forms to canonical record keys before transmission.
+    struct PlayerTintLayer
+    {
+        std::uint16_t tintIndex{};
+        std::uint16_t preset{};
+        std::uint16_t interpolationValue{};
+        std::uint32_t color{};
+    };
+
+    // Appearance uses runtime FormIDs on the client. All clients are already
+    // required to share the same load-order revision; the server persists these
+    // stable profile values separately from high-frequency transform state.
     struct PlayerAppearance
     {
         std::uint64_t revision{};
@@ -44,6 +53,7 @@ namespace SkyrimMP
         std::vector<std::uint32_t> headPartFormIds;
         std::array<float, 19> faceMorphs{};
         std::array<std::int32_t, 4> faceParts{};
+        std::vector<PlayerTintLayer> tintLayers;
     };
 
     struct PlayerState
