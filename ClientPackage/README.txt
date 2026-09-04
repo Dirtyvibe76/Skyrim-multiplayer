@@ -1,7 +1,7 @@
 SkyrimMultiplayer test client
 =============================
 
-This is PLAYABLE ALPHA 0.1.0-alpha.2. It is not a finished multiplayer release.
+This is PLAYABLE ALPHA 0.1.0-alpha.3. It is not a finished multiplayer release.
 
 Package channel: re-0.1-runtime-probe
 Wire protocol: 2

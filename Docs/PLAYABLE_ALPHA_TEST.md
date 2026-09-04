@@ -1,6 +1,6 @@
 # SkyrimMP playable-alpha two-PC test
 
-Build identity: **0.1.0-alpha.2**, wire protocol **2**, replication protocol **8**.
+Build identity: **0.1.0-alpha.3**, wire protocol **2**, replication protocol **8**.
 
 Both PCs run Skyrim SE/AE, matching SKSE, and the SkyrimMP client. Only one
 `SkyrimMPServer.exe` is started. Both launchers must point to that server's IPv4

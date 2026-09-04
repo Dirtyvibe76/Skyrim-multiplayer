@@ -1,5 +1,5 @@
 #define MyAppName "SkyrimMP"
-#define MyAppVersion "0.1.0-alpha.2"
+#define MyAppVersion "0.1.0-alpha.3"
 #define MyAppPublisher "SkyrimMP"
 #define MyAppExeName "SkyrimMPLauncher.exe"
 
@@ -11,7 +11,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\SkyrimMP
 DefaultGroupName=SkyrimMP
 OutputDir=..\release
-OutputBaseFilename=SkyrimMP-0.1.0-alpha.2-Setup
+OutputBaseFilename=SkyrimMP-0.1.0-alpha.3-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
