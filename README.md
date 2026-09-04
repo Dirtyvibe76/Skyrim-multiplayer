@@ -64,14 +64,14 @@ online once at a time, preventing two clients from racing the same MP save.
 The current build provides the SP-to-MP save branch, first-login Riverwood
 placement, authenticated UDP sessions, reconnects, authoritative player
 entities, interest management, remote-player transform proxies, and safe
-event-driven player combat/death status replication. It is not yet a complete
-co-op Skyrim conversion: authoritative combat outcomes, equipment and
+event-driven player combat/death status and equipment replication. It is not
+yet a complete co-op Skyrim conversion: authoritative combat outcomes,
 animation state, inventories, quests, dialogue, and world interactions still
 need dedicated synchronization and multi-client gameplay validation.
 
 ## Current status
 
-The current development protocol is **replication protocol 6** over wire
+The current development protocol is **replication protocol 7** over wire
 protocol 2. The following paths have been built and exercised against Skyrim
 SE/AE with SKSE64:
 
@@ -83,6 +83,11 @@ SE/AE with SKSE64:
 - Reliable session/bootstrap traffic and interest-based entity replication.
 - Native remote-player proxies with transform updates and despawning.
 - Event-driven combat/death status transport without unsafe actor-value reads.
+- Bounded equipment-set replication from `TESEquipEvent`, authoritative
+  persistence across server restarts, and game-thread remote-proxy
+  equip/unequip reconciliation. Live client/server add, replace, reconnect,
+  and persistence paths are verified; visual two-client proxy validation is
+  still required on two simultaneous game clients.
 - Automated protocol, UDP loopback, session, duplicate-login, entity, and
   replication startup self-tests.
 
@@ -127,8 +132,8 @@ pushes to `re-0.1-runtime-probe` and can also be started manually.
 
 Work required before calling this a complete co-op game:
 
-1. Equipment/loadout replication using `TESEquipEvent`, canonical FormIDs, and
-   safe main-thread equip/unequip application on remote proxies.
+1. Canonicalize and validate replicated equipment FormIDs against the server
+   item database, then complete visual two-client loadout reconciliation tests.
 2. Action and animation replication using SKSE action events plus a bounded,
    validated animation-event allowlist.
 3. Server-authoritative hit validation, damage, death, resurrection, magicka,

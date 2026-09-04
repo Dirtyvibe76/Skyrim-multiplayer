@@ -254,4 +254,24 @@ namespace SkyrimMP::Server
         }
         return true;
     }
+
+    bool UpdateRuntimeEquipmentState(
+        RuntimeEntityRegistry& registry,
+        NetworkEntityId id,
+        const std::vector<std::uint32_t>& equippedFormIds)
+    {
+        if (equippedFormIds.size() > 32 ||
+            std::any_of(equippedFormIds.begin(), equippedFormIds.end(), [](auto formId) { return formId == 0; }) ||
+            !std::is_sorted(equippedFormIds.begin(), equippedFormIds.end()) ||
+            std::adjacent_find(equippedFormIds.begin(), equippedFormIds.end()) != equippedFormIds.end()) return false;
+        const auto it = registry.entities.find(id);
+        if (it == registry.entities.end() || it->second.kind != RuntimeEntityKind::Player) return false;
+        auto& entity = it->second;
+        if (entity.equippedFormIds != equippedFormIds) {
+            entity.equippedFormIds = equippedFormIds;
+            ++entity.revision;
+            ++registry.updates;
+        }
+        return true;
+    }
 }

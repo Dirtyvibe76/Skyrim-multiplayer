@@ -9,11 +9,13 @@ namespace SkyrimMP
         bool dead{};
         bool inCombat{};
         bool valid{};
+        std::vector<std::uint32_t> equippedFormIds;
     };
 
     class GameplayEventProbe final :
         public RE::BSTEventSink<RE::TESCombatEvent>,
-        public RE::BSTEventSink<RE::TESDeathEvent>
+        public RE::BSTEventSink<RE::TESDeathEvent>,
+        public RE::BSTEventSink<RE::TESEquipEvent>
     {
     public:
         static GameplayEventProbe* GetSingleton();
@@ -27,5 +29,8 @@ namespace SkyrimMP
         RE::BSEventNotifyControl ProcessEvent(
             const RE::TESDeathEvent* a_event,
             RE::BSTEventSource<RE::TESDeathEvent>* a_source) override;
+        RE::BSEventNotifyControl ProcessEvent(
+            const RE::TESEquipEvent* a_event,
+            RE::BSTEventSource<RE::TESEquipEvent>* a_source) override;
     };
 }

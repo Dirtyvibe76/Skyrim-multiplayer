@@ -119,6 +119,12 @@ namespace SkyrimMP::Server
             interest.inCombat = (actorFlags & 0x02) != 0;
             interest.hasActorState = (actorFlags & 0x04) != 0;
             interest.hasStatusState = (actorFlags & 0x08) != 0;
+            const auto equipmentCount = ReadIntegral<std::uint8_t>(bytes, offset);
+            if (equipmentCount > 32) throw std::runtime_error("session interest equipment limit exceeded");
+            interest.equippedFormIds.reserve(equipmentCount);
+            for (std::uint8_t i = 0; i < equipmentCount; ++i) {
+                interest.equippedFormIds.push_back(ReadIntegral<std::uint32_t>(bytes, offset));
+            }
             interest.exteriorRadiusCells = ReadIntegral<std::int32_t>(bytes, offset);
             if (!interest.location.hasCell) throw std::runtime_error("session interest missing CELL");
             if (interest.location.exterior && !interest.location.hasWorldspace) throw std::runtime_error("session exterior interest missing WRLD");
@@ -188,6 +194,9 @@ namespace SkyrimMP::Server
         if (interest.hasActorState) actorFlags |= 0x04;
         if (interest.hasStatusState) actorFlags |= 0x08;
         AppendIntegral(out, actorFlags);
+        if (interest.equippedFormIds.size() > 32) throw std::runtime_error("session interest equipment limit exceeded");
+        AppendIntegral(out, static_cast<std::uint8_t>(interest.equippedFormIds.size()));
+        for (const auto formId : interest.equippedFormIds) AppendIntegral(out, formId);
         AppendIntegral(out, interest.exteriorRadiusCells);
         return out;
     }
@@ -392,6 +401,7 @@ namespace SkyrimMP::Server
         interest.transform = WorldTransform{ 1, 2, 3, 0, 0, 0 };
         interest.inCombat = true;
         interest.hasStatusState = true;
+        interest.equippedFormIds = { 0x00012EB7u, 0x0001397Eu };
         interest.exteriorRadiusCells = 1;
         const auto encoded = EncodeSessionInterest(7, interest);
         std::size_t offset = 0;
@@ -400,7 +410,9 @@ namespace SkyrimMP::Server
         const auto decoded = DecodeInterest(encoded, offset);
         EnsureConsumed(encoded, offset);
         if (!decoded.location.hasCell || decoded.location.cell.localId != 0x1234 || decoded.transform.x != 1.0f ||
-            !decoded.inCombat || !decoded.hasStatusState) throw std::runtime_error("session interest self-test round-trip failed");
+            !decoded.inCombat || !decoded.hasStatusState || decoded.equippedFormIds != interest.equippedFormIds) {
+            throw std::runtime_error("session interest self-test round-trip failed");
+        }
         std::cout << "[SESSION] handshake=true protocolValidation=true loadOrderValidation=true maxPlayers=true heartbeat=true disconnect=true replication=true interest=true batching=true ackTracking=true\n";
         std::cout << "[SESSION-SELFTEST] hello=true welcome=true authenticated=true heartbeat=true replication=true disconnect=true interest=true\n";
     }

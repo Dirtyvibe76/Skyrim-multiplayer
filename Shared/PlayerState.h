@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 namespace SkyrimMP
 {
@@ -28,5 +29,6 @@ namespace SkyrimMP
         bool inCombat{};
         bool hasActorState{};
         bool hasStatusState{};
+        std::vector<std::uint32_t> equippedFormIds;
     };
 }

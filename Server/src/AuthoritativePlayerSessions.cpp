@@ -1,5 +1,6 @@
 #include "SessionProtocol.h"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -126,6 +127,17 @@ namespace SkyrimMP::Server
             requested.inCombat = (actorFlags & 0x02) != 0;
             requested.hasActorState = (actorFlags & 0x04) != 0;
             requested.hasStatusState = (actorFlags & 0x08) != 0;
+            const auto equipmentCount = ReadIntegral<std::uint8_t>(bytes, offset);
+            if (equipmentCount > 32) throw std::runtime_error("authoritative player equipment limit exceeded");
+            requested.equippedFormIds.reserve(equipmentCount);
+            for (std::uint8_t i = 0; i < equipmentCount; ++i) {
+                requested.equippedFormIds.push_back(ReadIntegral<std::uint32_t>(bytes, offset));
+            }
+            if (std::any_of(requested.equippedFormIds.begin(), requested.equippedFormIds.end(), [](auto id) { return id == 0; }) ||
+                !std::is_sorted(requested.equippedFormIds.begin(), requested.equippedFormIds.end()) ||
+                std::adjacent_find(requested.equippedFormIds.begin(), requested.equippedFormIds.end()) != requested.equippedFormIds.end()) {
+                throw std::runtime_error("authoritative player equipment is invalid");
+            }
             requested.exteriorRadiusCells = ReadIntegral<std::int32_t>(bytes, offset);
 
             if (!requested.location.hasCell) throw std::runtime_error("authoritative player request missing CELL");
@@ -286,9 +298,26 @@ namespace SkyrimMP::Server
         state.dead = dead != 0;
         state.inCombat = inCombat != 0;
         state.hasActorState = hasActor != 0;
-        if (!(input >> hasStatus)) hasStatus = hasActor;
+        if (!(input >> hasStatus)) {
+            input.clear();
+            hasStatus = hasActor;
+        }
         if (hasStatus > 1) throw std::runtime_error("persisted player status flag is malformed");
         state.hasStatusState = hasStatus != 0;
+        unsigned equipmentCount{};
+        if (input >> equipmentCount) {
+            if (equipmentCount > 32) throw std::runtime_error("persisted player equipment limit exceeded");
+            state.equippedFormIds.reserve(equipmentCount);
+            for (unsigned i = 0; i < equipmentCount; ++i) {
+                std::uint32_t formId{};
+                if (!(input >> formId) || formId == 0) throw std::runtime_error("persisted player equipment is malformed");
+                state.equippedFormIds.push_back(formId);
+            }
+            if (!std::is_sorted(state.equippedFormIds.begin(), state.equippedFormIds.end()) ||
+                std::adjacent_find(state.equippedFormIds.begin(), state.equippedFormIds.end()) != state.equippedFormIds.end()) {
+                throw std::runtime_error("persisted player equipment is invalid");
+            }
+        }
         state.exteriorRadiusCells = 1;
         if (!state.location.hasCell || (state.location.exterior && !state.location.hasWorldspace) ||
             !FiniteTransform(state.transform) || (state.hasActorState && !ValidActorState(state))) {
@@ -315,7 +344,10 @@ namespace SkyrimMP::Server
                    << player.transform.x << ' ' << player.transform.y << ' ' << player.transform.z << ' '
                    << player.transform.pitch << ' ' << player.transform.yaw << ' ' << player.transform.roll << ' '
                    << player.health << ' ' << player.magicka << ' ' << player.stamina << ' '
-                   << player.dead << ' ' << player.inCombat << ' ' << player.hasActorState << ' ' << player.hasStatusState << '\n';
+                   << player.dead << ' ' << player.inCombat << ' ' << player.hasActorState << ' ' << player.hasStatusState
+                   << ' ' << player.equippedFormIds.size();
+            for (const auto formId : player.equippedFormIds) output << ' ' << formId;
+            output << '\n';
             if (!output) throw std::runtime_error("failed to write player-state temporary file");
         }
         std::error_code error;
@@ -447,6 +479,9 @@ namespace SkyrimMP::Server
                             !UpdateRuntimeStatusState(registry, session.playerEntityId, actorState.dead, actorState.inCombat)) {
                             throw std::runtime_error("authoritative player initial status state failed");
                         }
+                        if (!UpdateRuntimeEquipmentState(registry, session.playerEntityId, actorState.equippedFormIds)) {
+                            throw std::runtime_error("authoritative player initial equipment state failed");
+                        }
                         session.bootstrapAnchor = riverwood ? riverwood->sourceRecord :
                             (persisted && !SameLocationContext(persisted->location, requested.location) ?
                                 FindTransferAnchor(registry, persisted->location, persisted->transform) : CanonicalRecordKey{});
@@ -521,6 +556,9 @@ namespace SkyrimMP::Server
                 if (!requested.hasActorState && requested.hasStatusState &&
                     !UpdateRuntimeStatusState(registry, session.playerEntityId, requested.dead, requested.inCombat)) {
                     throw std::runtime_error("authoritative player status-state update failed");
+                }
+                if (!UpdateRuntimeEquipmentState(registry, session.playerEntityId, requested.equippedFormIds)) {
+                    throw std::runtime_error("authoritative player equipment-state update failed");
                 }
                 ++stats_.playerStateApplied;
 

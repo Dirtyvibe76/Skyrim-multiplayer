@@ -94,6 +94,9 @@ namespace SkyrimMP::Server
                 if (snapshot.dead) actorFlags |= 0x01;
                 if (snapshot.inCombat) actorFlags |= 0x02;
                 AppendIntegral(out, actorFlags);
+                if (snapshot.equippedFormIds.size() > 32) throw std::runtime_error("snapshot equipment exceeds wire limit");
+                AppendIntegral(out, static_cast<std::uint8_t>(snapshot.equippedFormIds.size()));
+                for (const auto formId : snapshot.equippedFormIds) AppendIntegral(out, formId);
             }
         }
 
@@ -130,6 +133,12 @@ namespace SkyrimMP::Server
                 if ((actorFlags & ~0x03u) != 0) throw std::runtime_error("invalid actor-state flags on wire");
                 snapshot.dead = (actorFlags & 0x01) != 0;
                 snapshot.inCombat = (actorFlags & 0x02) != 0;
+                const auto equipmentCount = ReadIntegral<std::uint8_t>(bytes, offset);
+                if (equipmentCount > 32) throw std::runtime_error("snapshot equipment exceeds wire limit");
+                snapshot.equippedFormIds.reserve(equipmentCount);
+                for (std::uint8_t i = 0; i < equipmentCount; ++i) {
+                    snapshot.equippedFormIds.push_back(ReadIntegral<std::uint32_t>(bytes, offset));
+                }
             }
             return snapshot;
         }
@@ -158,6 +167,7 @@ namespace SkyrimMP::Server
                 message.snapshot.magicka = 42.0f;
                 message.snapshot.stamina = 63.25f;
                 message.snapshot.inCombat = true;
+                message.snapshot.equippedFormIds = { 0x00012EB7u, 0x0001397Eu };
             }
             return message;
         }
@@ -274,6 +284,7 @@ namespace SkyrimMP::Server
             reliableRoundTrip.messages[1].kind != ReplicationMessageKind::Despawn ||
             !reliableRoundTrip.messages[0].snapshot.hasActorState ||
             !reliableRoundTrip.messages[0].snapshot.hasStatusState ||
+            reliableRoundTrip.messages[0].snapshot.equippedFormIds.size() != 2 ||
             reliableRoundTrip.messages[0].snapshot.health != 87.5f ||
             reliableRoundTrip.messages[0].snapshot.magicka != 42.0f ||
             reliableRoundTrip.messages[0].snapshot.stamina != 63.25f ||

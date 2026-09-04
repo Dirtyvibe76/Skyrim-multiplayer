@@ -8,7 +8,7 @@
 
 namespace SkyrimMP::Server
 {
-    constexpr std::uint16_t kReplicationProtocolVersion = 6;
+    constexpr std::uint16_t kReplicationProtocolVersion = 7;
 
     enum class ReplicationMessageKind : std::uint8_t
     {
@@ -33,6 +33,7 @@ namespace SkyrimMP::Server
         bool inCombat{};
         bool hasActorState{};
         bool hasStatusState{};
+        std::vector<std::uint32_t> equippedFormIds;
     };
 
     struct ReplicationMessage
@@ -61,6 +62,7 @@ namespace SkyrimMP::Server
         bool inCombat{};
         bool hasActorState{};
         bool hasStatusState{};
+        std::vector<std::uint32_t> equippedFormIds;
         std::int32_t exteriorRadiusCells{ 1 };
     };
 

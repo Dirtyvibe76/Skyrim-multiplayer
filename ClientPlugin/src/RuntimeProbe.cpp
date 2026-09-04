@@ -71,6 +71,7 @@ namespace SkyrimMP
         state.dead = gameplay.dead;
         state.inCombat = gameplay.inCombat;
         state.hasStatusState = gameplay.valid;
+        state.equippedFormIds = gameplay.equippedFormIds;
 
         return state;
     }

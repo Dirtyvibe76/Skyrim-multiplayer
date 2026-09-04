@@ -4,6 +4,7 @@
 #include "RemoteActorAdapter.h"
 #include "RemoteTransform.h"
 
+#include <algorithm>
 #include <deque>
 #include <mutex>
 #include <unordered_map>
@@ -36,6 +37,7 @@ namespace SkyrimMP
             std::uint64_t lastRevision{};
             std::uint32_t cellFormId{};
             std::uint32_t worldspaceFormId{};
+            std::vector<std::uint32_t> equippedFormIds;
         };
 
         std::mutex g_mutex;
@@ -94,6 +96,25 @@ namespace SkyrimMP
             }
         }
 
+        void ApplyEquipment(RE::Actor& actor, NativeProxy& proxy, const RemotePlayerProxyUpdate& update)
+        {
+            auto* manager = RE::ActorEquipManager::GetSingleton();
+            if (!manager) return;
+            for (const auto formId : proxy.equippedFormIds) {
+                if (std::binary_search(update.equippedFormIds.begin(), update.equippedFormIds.end(), formId)) continue;
+                if (auto* object = RE::TESForm::LookupByID<RE::TESBoundObject>(formId)) {
+                    manager->UnequipObject(&actor, object, nullptr, 1, nullptr, false, true, false, true);
+                }
+            }
+            for (const auto formId : update.equippedFormIds) {
+                if (std::binary_search(proxy.equippedFormIds.begin(), proxy.equippedFormIds.end(), formId)) continue;
+                if (auto* object = RE::TESForm::LookupByID<RE::TESBoundObject>(formId)) {
+                    manager->EquipObject(&actor, object, nullptr, 1, nullptr, false, true, false, true);
+                }
+            }
+            proxy.equippedFormIds = update.equippedFormIds;
+        }
+
         void DestroyProxy(std::uint64_t networkEntityId, NativeProxy& proxy, const char* reason)
         {
             if (auto* actor = ResolveActor(proxy)) {
@@ -148,7 +169,8 @@ namespace SkyrimMP
             proxy.lastRevision = update.revision;
             proxy.cellFormId = update.cellFormId;
             proxy.worldspaceFormId = update.worldspaceFormId;
-            g_proxies.emplace(networkEntityId, proxy);
+            const auto [proxyIt, inserted] = g_proxies.emplace(networkEntityId, std::move(proxy));
+            if (!inserted) return false;
 
             logs::info(
                 "[REMOTE PLAYER PROXY SPAWN] networkId={:016X} form={:08X} cell={:08X} world={:08X} revision={} active={}/{}",
@@ -167,6 +189,7 @@ namespace SkyrimMP
                 update.rotation
             });
             ApplyActorState(*actor, update);
+            ApplyEquipment(*actor, proxyIt->second, update);
             return true;
         }
 
@@ -208,6 +231,7 @@ namespace SkyrimMP
 
             proxy.lastRevision = update.revision;
             ApplyActorState(*actor, update);
+            ApplyEquipment(*actor, proxy, update);
             RemoteActorAdapter::Enqueue(RemoteTransform{
                 actor->GetFormID(),
                 AdapterSequence(update.revision),

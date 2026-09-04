@@ -24,7 +24,7 @@ namespace SkyrimMP
 
         constexpr std::uint32_t kWireMagic = 0x31504D53u;
         constexpr std::uint16_t kWireProtocolVersion = 2;
-        constexpr std::uint16_t kReplicationProtocolVersion = 6;
+        constexpr std::uint16_t kReplicationProtocolVersion = 7;
         constexpr std::uint16_t kServerPort = 10578;
         constexpr auto kLoadOrderRevision = "7dc35a831945468b790a6b3398236c0fe9fe7c8b32425be9ef07ca1434d6c808";
         constexpr std::size_t kMaxDatagram = 1200;
@@ -70,6 +70,7 @@ namespace SkyrimMP
             bool inCombat{};
             bool hasActorState{};
             bool hasStatusState{};
+            std::vector<std::uint32_t> equippedFormIds;
         };
 
         std::atomic_bool g_running{ false };
@@ -218,6 +219,8 @@ namespace SkyrimMP
             if (player.hasActorState) actorFlags |= 0x04;
             if (player.hasStatusState) actorFlags |= 0x08;
             Append(out, actorFlags);
+            Append(out, static_cast<std::uint8_t>(player.equippedFormIds.size()));
+            for (const auto formId : player.equippedFormIds) Append(out, formId);
             Append(out, static_cast<std::int32_t>(1));
             return out;
         }
@@ -271,7 +274,8 @@ namespace SkyrimMP
                 replica.dead,
                 replica.inCombat,
                 replica.hasActorState,
-                replica.hasStatusState
+                replica.hasStatusState,
+                replica.equippedFormIds
             });
         }
 
@@ -331,6 +335,12 @@ namespace SkyrimMP
                     if ((actorFlags & ~0x03u) != 0) throw std::runtime_error("invalid replicated actor flags");
                     replica.dead = (actorFlags & 0x01) != 0;
                     replica.inCombat = (actorFlags & 0x02) != 0;
+                    const auto equipmentCount = Read<std::uint8_t>(bytes, offset);
+                    if (equipmentCount > 32) throw std::runtime_error("replicated equipment exceeds client limit");
+                    replica.equippedFormIds.reserve(equipmentCount);
+                    for (std::uint8_t equipmentIndex = 0; equipmentIndex < equipmentCount; ++equipmentIndex) {
+                        replica.equippedFormIds.push_back(Read<std::uint32_t>(bytes, offset));
+                    }
                 }
                 replica.exterior = (flags & 0x02) != 0;
                 replica.hasCell = (flags & 0x04) != 0;

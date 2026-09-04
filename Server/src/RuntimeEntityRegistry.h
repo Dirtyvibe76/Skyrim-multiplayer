@@ -44,6 +44,7 @@ namespace SkyrimMP::Server
         bool inCombat{};
         bool hasActorState{};
         bool hasStatusState{};
+        std::vector<std::uint32_t> equippedFormIds;
         std::uint64_t revision{};
     };
 
@@ -95,4 +96,9 @@ namespace SkyrimMP::Server
         NetworkEntityId a_id,
         bool a_dead,
         bool a_inCombat);
+
+    bool UpdateRuntimeEquipmentState(
+        RuntimeEntityRegistry& a_registry,
+        NetworkEntityId a_id,
+        const std::vector<std::uint32_t>& a_equippedFormIds);
 }

@@ -22,6 +22,7 @@ namespace SkyrimMP
         bool inCombat{};
         bool hasActorState{};
         bool hasStatusState{};
+        std::vector<std::uint32_t> equippedFormIds;
     };
 
     class RemotePlayerProxyManager
