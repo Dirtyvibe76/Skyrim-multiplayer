@@ -36,7 +36,6 @@ namespace SkyrimMP
         constexpr std::uint8_t kRuntimeEntityKindPlayer = 2;
         constexpr std::size_t kMaxAppearanceName = 63;
         constexpr std::size_t kMaxAppearanceHeadParts = 32;
-        constexpr std::size_t kMaxAppearanceTintLayers = 32;
 
         enum class PacketKind : std::uint8_t { Data = 1, Ack = 2, Control = 3 };
         enum class Channel : std::uint8_t { Unreliable = 0, Reliable = 1 };
@@ -264,8 +263,7 @@ namespace SkyrimMP
             if (!appearance.valid || appearance.revision == 0 || appearance.displayName.size() > kMaxAppearanceName ||
                 appearance.raceFormId == 0 || appearance.sex > 1 || !std::isfinite(appearance.weight) ||
                 appearance.weight < 0.0f || appearance.weight > 100.0f ||
-                appearance.headPartFormIds.size() > kMaxAppearanceHeadParts ||
-                appearance.tintLayers.size() > kMaxAppearanceTintLayers) {
+                appearance.headPartFormIds.size() > kMaxAppearanceHeadParts) {
                 return false;
             }
             for (const auto morph : appearance.faceMorphs) {
@@ -292,13 +290,6 @@ namespace SkyrimMP
             for (const auto formId : appearance.headPartFormIds) Append(out, formId);
             for (const auto morph : appearance.faceMorphs) AppendFloat(out, morph);
             for (const auto part : appearance.faceParts) Append(out, part);
-            Append(out, static_cast<std::uint8_t>(appearance.tintLayers.size()));
-            for (const auto& layer : appearance.tintLayers) {
-                Append(out, layer.tintIndex);
-                Append(out, layer.preset);
-                Append(out, layer.interpolationValue);
-                Append(out, layer.color);
-            }
             return out;
         }
 
@@ -320,17 +311,6 @@ namespace SkyrimMP
             for (std::uint8_t i = 0; i < headPartCount; ++i) appearance.headPartFormIds.push_back(Read<std::uint32_t>(bytes, offset));
             for (auto& morph : appearance.faceMorphs) morph = ReadFloat(bytes, offset);
             for (auto& part : appearance.faceParts) part = Read<std::int32_t>(bytes, offset);
-            const auto tintLayerCount = Read<std::uint8_t>(bytes, offset);
-            if (tintLayerCount > kMaxAppearanceTintLayers) throw std::runtime_error("appearance tint-layer count invalid");
-            appearance.tintLayers.reserve(tintLayerCount);
-            for (std::uint8_t i = 0; i < tintLayerCount; ++i) {
-                PlayerTintLayer layer;
-                layer.tintIndex = Read<std::uint16_t>(bytes, offset);
-                layer.preset = Read<std::uint16_t>(bytes, offset);
-                layer.interpolationValue = Read<std::uint16_t>(bytes, offset);
-                layer.color = Read<std::uint32_t>(bytes, offset);
-                appearance.tintLayers.push_back(layer);
-            }
             if (!ValidAppearance(appearance)) throw std::runtime_error("received appearance profile invalid");
             return appearance;
         }
@@ -703,7 +683,7 @@ namespace SkyrimMP
                         SendDatagram(socketValue, server, MakePacket(PacketKind::Control, Channel::Reliable, nextSequence++, 0, profile));
                         if (sampledPlayer.appearance.revision != lastAppearanceSentRevision) {
                             logs::info(
-                                "[APPEARANCE-SEND] revision={:016X} name={} race={:08X} sex={} weight={:.3f} headParts={} tintLayers={}",
+                                "[APPEARANCE-SEND] revision={:016X} name={} race={:08X} sex={} weight={:.3f} headParts={} capturedTintLayers={}",
                                 sampledPlayer.appearance.revision,
                                 sampledPlayer.appearance.displayName,
                                 sampledPlayer.appearance.raceFormId,
@@ -793,14 +773,13 @@ namespace SkyrimMP
                                 auto appearance = DecodeAppearanceProfile(bytes, offset);
                                 if (offset != bytes.size()) throw std::runtime_error("appearance profile trailing bytes");
                                 logs::info(
-                                    "[APPEARANCE-RECEIVE] networkId={:016X} revision={:016X} name={} race={:08X} sex={} headParts={} tintLayers={}",
+                                    "[APPEARANCE-RECEIVE] networkId={:016X} revision={:016X} name={} race={:08X} sex={} headParts={}",
                                     networkEntityId,
                                     appearance.revision,
                                     appearance.displayName,
                                     appearance.raceFormId,
                                     appearance.sex,
-                                    appearance.headPartFormIds.size(),
-                                    appearance.tintLayers.size());
+                                    appearance.headPartFormIds.size());
                                 RemotePlayerProxyManager::EnqueueAppearance(networkEntityId, appearance);
                             } else if (controlKind == ControlKind::Reject) {
                                 const auto reason = Read<std::uint8_t>(bytes, offset);
