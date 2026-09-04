@@ -35,7 +35,7 @@ internal sealed class LauncherForm : Form
 
     public LauncherForm()
     {
-        Text = "SkyrimMP Launcher";
+        Text = $"SkyrimMP Launcher {BuildInfo.Version}";
         Width = 720;
         Height = 330;
         StartPosition = FormStartPosition.CenterScreen;
@@ -197,7 +197,7 @@ internal sealed class LauncherForm : Form
 
                 _shutdown.CancelAfter(Timeout.InfiniteTimeSpan);
                 _relayTask = RunRelayAsync(ip, config.ServerPort, _shutdown.Token);
-                _status.Text = $"Multiplayer relay active: 127.0.0.1:10578 -> {ip}:{config.ServerPort}. Load SkyrimMP_* (or a post-Helgen save for first import).";
+            _status.Text = $"{BuildInfo.Display}. Relay: 127.0.0.1:10578 -> {ip}:{config.ServerPort}. Load SkyrimMP_* (or a post-Helgen save for first import).";
             }
             else
             {

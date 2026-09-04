@@ -12,6 +12,7 @@ on:
       - 'ClientPackage/**'
       - 'ClientLauncher/**'
       - 'Installer/**'
+      - 'Docs/PLAYABLE_ALPHA_TEST.md'
       - 'External/**'
       - 'xmake.lua'
       - '.gitmodules'
@@ -36,6 +37,24 @@ jobs:
         shell: cmd
         run: xmake f -m releasedbg -a x64 -y
 
+      - name: Verify shared alpha identity
+        shell: powershell
+        run: |
+          $expectedVersion = '0.1.0-alpha.1'
+          $expectedWire = '2'
+          $expectedReplication = '7'
+          $files = @('Shared\BuildInfo.h', 'ClientLauncher\BuildInfo.cs', 'Installer\SkyrimMP.iss', 'ClientPackage\README.txt')
+          foreach ($file in $files) {
+            $text = Get-Content $file -Raw
+            if (-not $text.Contains($expectedVersion)) { throw "$file does not contain version $expectedVersion" }
+          }
+          foreach ($file in @('Shared\BuildInfo.h', 'ClientLauncher\BuildInfo.cs', 'ClientPackage\README.txt')) {
+            $text = Get-Content $file -Raw
+            if (-not $text.Contains($expectedWire) -or -not $text.Contains($expectedReplication)) {
+              throw "$file does not contain the expected protocol identity"
+            }
+          }
+
       - name: Build client DLL
         shell: cmd
         run: xmake build -vD SkyrimMultiplayer
@@ -56,6 +75,7 @@ jobs:
           Copy-Item 'build\windows\x64\releasedbg\SkyrimMultiplayer.dll' $stage
           Copy-Item 'launcher-publish\SkyrimMPLauncher.exe' $stage
           Copy-Item 'ClientPackage\README.txt' $stage
+          Copy-Item 'Docs\PLAYABLE_ALPHA_TEST.md' $stage
           Get-FileHash (Join-Path $stage 'SkyrimMultiplayer.dll') -Algorithm SHA256 |
             ForEach-Object { "SkyrimMultiplayer.dll SHA256=$($_.Hash)" } |
             Set-Content (Join-Path $stage 'SHA256.txt')
@@ -80,18 +100,18 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
           & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' 'Installer\SkyrimMP.iss'
-          if (-not (Test-Path 'release\SkyrimMP-Setup.exe')) { throw 'SkyrimMP installer was not produced.' }
-          Get-FileHash 'release\SkyrimMP-Setup.exe' -Algorithm SHA256 |
-            ForEach-Object { "SkyrimMP-Setup.exe SHA256=$($_.Hash)" } |
-            Set-Content 'release\SkyrimMP-Setup.SHA256.txt'
+          if (-not (Test-Path 'release\SkyrimMP-0.1.0-alpha.1-Setup.exe')) { throw 'SkyrimMP installer was not produced.' }
+          Get-FileHash 'release\SkyrimMP-0.1.0-alpha.1-Setup.exe' -Algorithm SHA256 |
+            ForEach-Object { "SkyrimMP-0.1.0-alpha.1-Setup.exe SHA256=$($_.Hash)" } |
+            Set-Content 'release\SkyrimMP-0.1.0-alpha.1-Setup.SHA256.txt'
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: SkyrimMP-Setup
           path: |
-            release/SkyrimMP-Setup.exe
-            release/SkyrimMP-Setup.SHA256.txt
+            release/SkyrimMP-0.1.0-alpha.1-Setup.exe
+            release/SkyrimMP-0.1.0-alpha.1-Setup.SHA256.txt
           if-no-files-found: error
           retention-days: 30
 
@@ -103,6 +123,7 @@ jobs:
           Copy-Item 'build\windows\x64\releasedbg\SkyrimMPServer.exe' $stage
           Copy-Item 'Server\server.ini.example' $stage
           Copy-Item 'README.md' $stage
+          Copy-Item 'Docs\PLAYABLE_ALPHA_TEST.md' $stage
           Get-FileHash (Join-Path $stage 'SkyrimMPServer.exe') -Algorithm SHA256 |
             ForEach-Object { "SkyrimMPServer.exe SHA256=$($_.Hash)" } |
             Set-Content (Join-Path $stage 'SHA256.txt')

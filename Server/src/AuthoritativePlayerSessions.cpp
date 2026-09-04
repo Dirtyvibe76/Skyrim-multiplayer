@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -17,6 +18,17 @@ namespace SkyrimMP::Server
 {
     namespace
     {
+        std::string EndpointText(const NetworkEndpoint& endpoint)
+        {
+            const auto* octets = reinterpret_cast<const std::uint8_t*>(&endpoint.address);
+            std::ostringstream out;
+            out << static_cast<unsigned>(octets[0]) << '.'
+                << static_cast<unsigned>(octets[1]) << '.'
+                << static_cast<unsigned>(octets[2]) << '.'
+                << static_cast<unsigned>(octets[3]) << ':' << endpoint.port;
+            return out.str();
+        }
+
         template <class T>
         void AppendIntegral(std::vector<std::uint8_t>& out, T value)
         {
@@ -396,6 +408,11 @@ namespace SkyrimMP::Server
                         it->second.clientNonce = nonce;
                         it->second.firstLogin = !seenClientNonces_.contains(nonce);
                         ++stats_.accepted;
+                        std::cout << "[SESSION-ACCEPT] endpoint=" << EndpointText(incoming.endpoint)
+                                  << " session=" << it->second.sessionId
+                                  << " character=" << it->second.clientNonce
+                                  << " protocol=" << protocol
+                                  << " firstLogin=" << it->second.firstLogin << '\n';
                     }
                     it->second.lastHeartbeat = std::chrono::steady_clock::now();
                     transport.SendControl(incoming.endpoint, WireChannel::Reliable,
@@ -424,6 +441,10 @@ namespace SkyrimMP::Server
 
                 if (kind == SessionControlKind::Disconnect) {
                     EnsureConsumed(incoming.payload, offset);
+                    std::cout << "[PLAYER-DISCONNECT] endpoint=" << EndpointText(incoming.endpoint)
+                              << " session=" << session.sessionId
+                              << " character=" << session.clientNonce
+                              << " entity=" << (session.hasPlayerEntity ? session.playerEntityId : 0) << '\n';
                     if (session.hasPlayerEntity) {
                         const auto playerIt = registry.entities.find(session.playerEntityId);
                         if (playerIt != registry.entities.end() && session.playerStateDirty) PersistPlayer(session.clientNonce, playerIt->second);
@@ -492,6 +513,13 @@ namespace SkyrimMP::Server
                         session.replication.excludedEntityId = session.playerEntityId;
                         session.replication.hasExcludedEntity = true;
                         ++stats_.playerEntitiesSpawned;
+                        std::cout << "[PLAYER-SPAWN] endpoint=" << EndpointText(incoming.endpoint)
+                                  << " session=" << session.sessionId
+                                  << " character=" << session.clientNonce
+                                  << " entity=" << session.playerEntityId
+                                  << " firstLogin=" << static_cast<bool>(riverwood)
+                                  << " restored=" << persisted.has_value()
+                                  << " equipment=" << actorState.equippedFormIds.size() << '\n';
                         if (riverwood) {
                             ++stats_.riverwoodFirstLogins;
                         }
@@ -581,7 +609,12 @@ namespace SkyrimMP::Server
                     session.playerStateDirty = false;
                     session.lastPlayerStatePersist = now;
                 }
-            } catch (const std::exception&) {
+            } catch (const std::exception& error) {
+                const auto sessionIt = sessions_.find(incoming.endpoint);
+                std::cerr << "[SESSION-MALFORMED] endpoint=" << EndpointText(incoming.endpoint)
+                          << " session=" << (sessionIt == sessions_.end() ? 0 : sessionIt->second.sessionId)
+                          << " character=" << (sessionIt == sessions_.end() ? 0 : sessionIt->second.clientNonce)
+                          << " reason=\"" << error.what() << "\"\n";
                 Reject(transport, incoming.endpoint, SessionRejectReason::Malformed);
             }
         }
@@ -604,6 +637,10 @@ namespace SkyrimMP::Server
                 }
                 ++stats_.playerEntitiesDespawned;
             }
+            std::cout << "[PLAYER-TIMEOUT] endpoint=" << EndpointText(it->first)
+                      << " session=" << it->second.sessionId
+                      << " character=" << it->second.clientNonce
+                      << " entity=" << (it->second.hasPlayerEntity ? it->second.playerEntityId : 0) << '\n';
             it = sessions_.erase(it);
         }
     }

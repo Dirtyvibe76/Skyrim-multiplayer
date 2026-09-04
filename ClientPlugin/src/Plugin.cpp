@@ -4,6 +4,7 @@
 #include "GameplayEventProbe.h"
 #include "MainThreadHook.h"
 #include "ObjectLoadProbe.h"
+#include "BuildInfo.h"
 
 namespace
 {
@@ -20,7 +21,7 @@ namespace
 
         switch (a_message->type) {
         case SKSE::MessagingInterface::kDataLoaded:
-            logs::info("[RE-0.8] Skyrim data loaded");
+            logs::info("[ALPHA {}] Skyrim data loaded", SkyrimMP::BuildInfo::kVersion);
 
             if (!g_hookInstalled) {
                 SkyrimMP::MainThreadHook::Install();
@@ -37,24 +38,24 @@ namespace
             break;
 
         case SKSE::MessagingInterface::kPostLoadGame:
-            logs::info("[RE-0.8] save loaded");
+            logs::info("[ALPHA {}] save loaded", SkyrimMP::BuildInfo::kVersion);
             SkyrimMP::MainThreadHook::ResetActorCache();
             SkyrimMP::GameplayEventProbe::Reset();
             if (g_networkStarted) SkyrimMP::ClientNetwork::Stop();
             SkyrimMP::ClientNetwork::Start();
             g_networkStarted = true;
-            logs::info("[RE-0.8] loaded-save multiplayer client worker started");
+            logs::info("[ALPHA {}] loaded-save multiplayer client worker started", SkyrimMP::BuildInfo::kVersion);
             break;
 
         case SKSE::MessagingInterface::kNewGame:
-            logs::info("[RE-0.8] new game");
+            logs::info("[ALPHA {}] new game", SkyrimMP::BuildInfo::kVersion);
             SkyrimMP::MainThreadHook::ResetActorCache();
             SkyrimMP::GameplayEventProbe::Reset();
             if (g_networkStarted) {
                 SkyrimMP::ClientNetwork::Stop();
                 g_networkStarted = false;
             }
-            logs::info("[RE-0.8] multiplayer waits for a post-Helgen saved game");
+            logs::info("[ALPHA {}] multiplayer waits for a post-Helgen saved game", SkyrimMP::BuildInfo::kVersion);
             break;
 
         default:
@@ -67,7 +68,12 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
 {
     SKSE::Init(a_skse);
 
-    logs::info("Skyrim Multiplayer RE-0.8 loaded");
+    logs::info(
+        "SkyrimMP client version={} channel={} wireProtocol={} replicationProtocol={}",
+        SkyrimMP::BuildInfo::kVersion,
+        SkyrimMP::BuildInfo::kChannel,
+        SkyrimMP::BuildInfo::kWireProtocol,
+        SkyrimMP::BuildInfo::kReplicationProtocol);
 
     const auto runtime = REL::Module::get().version();
 
@@ -81,7 +87,7 @@ SKSE_PLUGIN_LOAD(const SKSE::LoadInterface* a_skse)
     auto* messaging = SKSE::GetMessagingInterface();
 
     if (!messaging || !messaging->RegisterListener(MessageHandler)) {
-        logs::critical("[RE-0.8] failed to register SKSE messaging listener");
+        logs::critical("[ALPHA {}] failed to register SKSE messaging listener", SkyrimMP::BuildInfo::kVersion);
         return false;
     }
 

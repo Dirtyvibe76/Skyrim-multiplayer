@@ -2,6 +2,7 @@
 #include "NetworkTransport.h"
 #include "SessionProtocol.h"
 #include "PartyQuestManager.h"
+#include "BuildInfo.h"
 
 #include <windows.h>
 
@@ -57,10 +58,13 @@ namespace SkyrimMP::Server
         std::uint64_t ticks{};
         std::uint64_t replicationPasses{};
 
-        std::cout << "[LIVE] listening=0.0.0.0:" << transport.BoundPort()
+        std::cout << "[LIVE] version=" << BuildInfo::kVersion
+                  << " channel=" << BuildInfo::kChannel
+                  << " wireProtocol=" << BuildInfo::kWireProtocol
+                  << " replicationProtocol=" << BuildInfo::kReplicationProtocol
+                  << " listening=0.0.0.0:" << transport.BoundPort()
                   << " tickHz=" << tickHz
                   << " maxPlayers=" << maxPlayers
-                  << " protocol=" << kWireProtocolVersion
                   << " loadOrder=" << loadOrderRevision << '\n';
         std::cout << "[LIVE] authority=server-player-entity interest=derived-from-authoritative-player\n";
         std::cout << "[LIVE] Ctrl+C to stop dedicated server\n";

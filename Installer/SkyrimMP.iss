@@ -1,5 +1,5 @@
 #define MyAppName "SkyrimMP"
-#define MyAppVersion "0.1.0-dev"
+#define MyAppVersion "0.1.0-alpha.1"
 #define MyAppPublisher "SkyrimMP"
 #define MyAppExeName "SkyrimMPLauncher.exe"
 
@@ -11,7 +11,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\SkyrimMP
 DefaultGroupName=SkyrimMP
 OutputDir=..\release
-OutputBaseFilename=SkyrimMP-Setup
+OutputBaseFilename=SkyrimMP-0.1.0-alpha.1-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -27,6 +27,7 @@ Source: "..\artifact\SkyrimMultiplayer-Client\SkyrimMPLauncher.exe"; DestDir: "{
 Source: "..\artifact\SkyrimMultiplayer-Client\SkyrimMultiplayer.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\artifact\SkyrimMultiplayer-Client\README.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\artifact\SkyrimMultiplayer-Client\SHA256.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\artifact\SkyrimMultiplayer-Client\PLAYABLE_ALPHA_TEST.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\SkyrimMP Launcher"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"

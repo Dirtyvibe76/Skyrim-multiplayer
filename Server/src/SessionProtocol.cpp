@@ -1,5 +1,7 @@
 #include "SessionProtocol.h"
 
+#include <iostream>
+
 #include <bit>
 #include <filesystem>
 #include <fstream>
@@ -235,6 +237,13 @@ namespace SkyrimMP::Server
     void ServerSessionManager::Reject(NetworkTransport& transport, const NetworkEndpoint& endpoint, SessionRejectReason reason)
     {
         transport.SendControl(endpoint, WireChannel::Reliable, EncodeReject(reason));
+        const auto* octets = reinterpret_cast<const std::uint8_t*>(&endpoint.address);
+        std::cerr << "[SESSION-REJECT] endpoint="
+                  << static_cast<unsigned>(octets[0]) << '.'
+                  << static_cast<unsigned>(octets[1]) << '.'
+                  << static_cast<unsigned>(octets[2]) << '.'
+                  << static_cast<unsigned>(octets[3]) << ':' << endpoint.port
+                  << " reason=" << static_cast<unsigned>(reason) << '\n';
         ++stats_.rejected;
     }
 

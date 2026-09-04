@@ -1,7 +1,7 @@
 includes("External/CommonLibSSE-NG")
 
 set_project("SkyrimMultiplayer")
-set_version("0.0.1")
+set_version("0.1.0-alpha.1")
 set_languages("c++23")
 set_warnings("allextra")
 
@@ -33,5 +33,6 @@ target("SkyrimMultiplayer")
 target("SkyrimMPServer")
     set_kind("binary")
     add_files("Server/src/**.cpp")
+    add_includedirs("Shared")
     add_packages("zlib")
     add_syslinks("bcrypt", "ws2_32")
