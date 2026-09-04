@@ -3,6 +3,7 @@
 #include "WorldReferenceDatabase.h"
 #include "ImportedQuestDatabase.h"
 #include "RuntimeEntityRegistry.h"
+#include "ServerQuestProgram.h"
 
 #include <zlib.h>
 
@@ -231,7 +232,12 @@ namespace SkyrimMP::Server
 
         summary.questDefinitions = std::make_shared<ImportedQuestDatabase>(
             BuildImportedQuestDatabase(a_database, a_stack));
-        if (a_runtimeRegistry) a_runtimeRegistry->questDefinitions = summary.questDefinitions;
+        summary.questPrograms = std::make_shared<ServerQuestProgramDatabase>(
+            CompileServerQuestPrograms(*summary.questDefinitions));
+        if (a_runtimeRegistry) {
+            a_runtimeRegistry->questDefinitions = summary.questDefinitions;
+            a_runtimeRegistry->questPrograms = summary.questPrograms;
+        }
 
         // Materialize authoritative placed-world references. REFR/ACHR NAME targets are
         // canonicalized against the winning-record database and ACHR bases must resolve to NPC_.

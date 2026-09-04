@@ -445,6 +445,13 @@ int main(int argc, char** argv)
                   << " adapterRequired=" << quests.adapterRequired
                   << " unsupported=" << quests.unsupported
                   << " retained=true deterministicKeys=true\n";
+        const auto& programs = *payloadSummary.questPrograms;
+        std::cout << "[QUEST-PROGRAM] executable=" << programs.programs.size()
+                  << " adapterRequired=" << programs.skippedAdapterRequired
+                  << " unsupported=" << programs.skippedUnsupported
+                  << " noStages=" << programs.skippedNoStages
+                  << " duplicateStageEntriesMerged=" << programs.duplicateStageEntriesMerged
+                  << " orderedTransitions=true retained=true\n";
 
         std::cout << "[MODS] manifest=" << fs::absolute(config.manifestPath).string() << '\n';
         std::cout << "[PASS] server canonical database + complete gameplay payload import complete\n";

@@ -93,6 +93,9 @@ SE/AE with SKSE64:
   condition counts. Startup classifies every winning quest as record-driven,
   adapter-required, or unsupported instead of treating Papyrus-heavy quests
   as automatically safe.
+- Deterministic `ServerQuestProgram` compilation for record-driven quests with
+  ordered, deduplicated stage transitions; unsafe definitions remain excluded
+  behind explicit adapter/unsupported classifications.
 - Automated protocol, UDP loopback, session, duplicate-login, entity, and
   replication startup self-tests.
 
