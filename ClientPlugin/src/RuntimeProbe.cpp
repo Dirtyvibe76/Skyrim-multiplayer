@@ -58,12 +58,9 @@ namespace SkyrimMP
             for (const auto formId : appearance.headPartFormIds) mix(formId);
             for (const auto value : appearance.faceMorphs) mix(std::bit_cast<std::uint32_t>(value));
             for (const auto value : appearance.faceParts) mix(static_cast<std::uint32_t>(value));
-            for (const auto& layer : appearance.tintLayers) {
-                mix(layer.tintIndex);
-                mix(layer.preset);
-                mix(layer.interpolationValue);
-                mix(layer.color);
-            }
+            // Tint layers are captured below for diagnostics and the next profile
+            // revision, but they are deliberately excluded from v1's revision
+            // hash until the corresponding wire/apply path is enabled.
             return hash == 0 ? 1 : hash;
         }
 
@@ -173,7 +170,7 @@ namespace SkyrimMP
 
         if (state.appearance.valid && (firstSample || state.appearance.revision != previous.appearance.revision)) {
             logs::info(
-                "[APPEARANCE-CAPTURE] revision={:016X} name={} race={:08X} sex={} weight={:.3f} headParts={} tintLayers={}",
+                "[APPEARANCE-CAPTURE] revision={:016X} name={} race={:08X} sex={} weight={:.3f} headParts={} capturedTintLayers={}",
                 state.appearance.revision,
                 state.appearance.displayName,
                 state.appearance.raceFormId,
