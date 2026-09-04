@@ -2,6 +2,7 @@
 
 #include "CanonicalRecordDatabase.h"
 #include "InterestManagementIndex.h"
+#include "PlayerState.h"
 #include "WorldReferenceDatabase.h"
 #include "WorldSpatialContext.h"
 
@@ -47,6 +48,7 @@ namespace SkyrimMP::Server
         bool inCombat{};
         bool hasActorState{};
         bool hasStatusState{};
+        PlayerAppearance appearance;
         std::uint16_t actionFlags{};
         std::vector<std::uint32_t> equippedFormIds;
         std::uint64_t revision{};
@@ -102,6 +104,11 @@ namespace SkyrimMP::Server
         NetworkEntityId a_id,
         bool a_dead,
         bool a_inCombat);
+
+    bool UpdateRuntimeAppearanceState(
+        RuntimeEntityRegistry& a_registry,
+        NetworkEntityId a_id,
+        const PlayerAppearance& a_appearance);
 
     bool UpdateRuntimeEquipmentState(
         RuntimeEntityRegistry& a_registry,
