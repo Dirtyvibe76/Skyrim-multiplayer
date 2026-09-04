@@ -2,6 +2,7 @@
 
 #include "ClientNetwork.h"
 #include "GameplayEventProbe.h"
+#include "MultiplayerLaunchConfig.h"
 #include "RuntimeProbe.h"
 
 #include <algorithm>
@@ -20,6 +21,9 @@ namespace SkyrimMP
 
         std::uint64_t CharacterId(const RE::PlayerCharacter& player)
         {
+            if (const auto configured = GetMultiplayerLaunchConfig().characterId; configured != 0) {
+                return configured;
+            }
             if (const auto* saves = RE::BGSSaveLoadManager::GetSingleton(); saves && saves->currentCharacterID != 0) {
                 return saves->currentCharacterID;
             }

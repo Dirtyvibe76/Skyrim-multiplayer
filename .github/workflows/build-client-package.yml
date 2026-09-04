@@ -40,7 +40,7 @@ jobs:
       - name: Verify shared alpha identity
         shell: powershell
         run: |
-          $expectedVersion = '0.1.0-alpha.3'
+          $expectedVersion = '0.1.0-alpha.4'
           $expectedWire = '2'
           $expectedReplication = '9'
           $files = @('Shared\BuildInfo.h', 'ClientLauncher\BuildInfo.cs', 'Installer\SkyrimMP.iss', 'ClientPackage\README.txt')
@@ -100,18 +100,18 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
           & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' 'Installer\SkyrimMP.iss'
-          if (-not (Test-Path 'release\SkyrimMP-0.1.0-alpha.3-Setup.exe')) { throw 'SkyrimMP installer was not produced.' }
-          Get-FileHash 'release\SkyrimMP-0.1.0-alpha.3-Setup.exe' -Algorithm SHA256 |
-            ForEach-Object { "SkyrimMP-0.1.0-alpha.3-Setup.exe SHA256=$($_.Hash)" } |
-            Set-Content 'release\SkyrimMP-0.1.0-alpha.3-Setup.SHA256.txt'
+          if (-not (Test-Path 'release\SkyrimMP-0.1.0-alpha.4-Setup.exe')) { throw 'SkyrimMP installer was not produced.' }
+          Get-FileHash 'release\SkyrimMP-0.1.0-alpha.4-Setup.exe' -Algorithm SHA256 |
+            ForEach-Object { "SkyrimMP-0.1.0-alpha.4-Setup.exe SHA256=$($_.Hash)" } |
+            Set-Content 'release\SkyrimMP-0.1.0-alpha.4-Setup.SHA256.txt'
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: SkyrimMP-Setup
           path: |
-            release/SkyrimMP-0.1.0-alpha.3-Setup.exe
-            release/SkyrimMP-0.1.0-alpha.3-Setup.SHA256.txt
+            release/SkyrimMP-0.1.0-alpha.4-Setup.exe
+            release/SkyrimMP-0.1.0-alpha.4-Setup.SHA256.txt
           if-no-files-found: error
           retention-days: 30
 

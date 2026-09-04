@@ -1,6 +1,6 @@
 # SkyrimMP playable-alpha two-PC test
 
-Build identity: **0.1.0-alpha.3**, wire protocol **2**, replication protocol **8**.
+Build identity: **0.1.0-alpha.4**, wire protocol **2**, replication protocol **9**.
 
 Both PCs run Skyrim SE/AE, matching SKSE, and the SkyrimMP client. Only one
 `SkyrimMPServer.exe` is started. Both launchers must point to that server's IPv4
@@ -12,8 +12,8 @@ the server PC. Never use the same character save on both PCs.
 - Install artifacts from the same successful GitHub Actions run on both PCs.
 - Confirm the launcher title, each SKSE log, and server startup report the build
   and protocol values above.
-- On each PC, create a different character in single player, leave the Helgen
-  cave, and make a normal save. Keep the original saves unchanged.
+- On each PC, use **Create Multiplayer Character** once. This must not require
+  or modify a single-player save.
 - Create a timestamped folder for the server log and each client log.
 
 ## Test run
@@ -23,10 +23,10 @@ Record PASS or FAIL and relevant log timestamps for every row.
 | # | Action | Expected result | Result / evidence |
 |---:|---|---|---|
 | 1 | Start the dedicated server. | Startup self-tests pass; UDP 10578 listens; version/protocol match. | |
-| 2 | Start PC 1 with **Join Multiplayer Server**. | Launcher writes the direct server target and Skyrim opens through SKSE. | |
-| 3 | Load PC 1's post-Helgen save, or its existing `SkyrimMP_*` save. | First import moves to Riverwood and creates a separate MP save; later logins restore it without crashing. | |
-| 4 | Start PC 2 with **Join Multiplayer Server**. | It connects to the same dedicated server. | |
-| 5 | Load PC 2's distinct character/save. | A distinct `SkyrimMP_*` branch is created or restored. | |
+| 2 | Start PC 1 with **Create Multiplayer Character**. | Skyrim bootstraps directly into Riverwood and opens the native character creator without loading an SP save. | |
+| 3 | Confirm a unique name and appearance. | A new stable ID and `SkyrimMP_<character-id>` save are created; appearance reaches the server. | |
+| 4 | Start PC 2 with **Create Multiplayer Character**. | It receives a different stable ID and joins the same server in Riverwood. | |
+| 5 | Confirm PC 2's distinct character. | Both clients receive the other's reliable appearance profile and render distinct avatars. | |
 | 6 | Inspect the server log. | Two sessions, two character IDs, and two player entity IDs are present. | |
 | 7 | Meet in Riverwood. | Each client sees only the other character; no self or duplicate proxy exists. | |
 | 8 | Walk, run, rotate, sneak, and jump. | Remote movement and state remain recognizable and responsive. | |

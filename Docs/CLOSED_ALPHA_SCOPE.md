@@ -5,13 +5,12 @@ clients.  Normal Skyrim single player remains separate and untouched.
 
 ## Character entry
 
-- A multiplayer import begins from a distinct, post-Helgen, level-one source
-  character.
-- The source save remains unchanged.  Multiplayer creates and thereafter uses
-  a separate `SkyrimMP_<character-id>` branch.
-- The future import inventory gate permits only an explicit Helgen loot
-  whitelist; all other imported equipment, consumables, materials, and gold
-  are removed from the MP branch exactly once under server authority.
+- First login starts a clean, level-one multiplayer-only character in Riverwood
+  and opens Skyrim's compact native character creator.
+- Multiplayer creates and thereafter uses a separate
+  `SkyrimMP_<character-id>` save. No single-player save is imported or changed.
+- The new character begins with the server-approved closed-alpha starter loadout;
+  arbitrary SP inventory, gold, quest state, and progression cannot enter MP.
 
 ## World, death, and travel
 

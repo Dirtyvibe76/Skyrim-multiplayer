@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace SkyrimMPLauncher;
@@ -10,6 +11,7 @@ internal sealed class LauncherConfig
     public string SkyrimPath { get; set; } = string.Empty;
     public string ServerAddress { get; set; } = "127.0.0.1";
     public int ServerPort { get; set; } = 10578;
+    public ulong MultiplayerCharacterId { get; set; }
 }
 
 internal static class Program
@@ -36,7 +38,7 @@ internal sealed class LauncherForm : Form
     {
         Text = $"SkyrimMP Launcher {BuildInfo.Version}";
         Width = 720;
-        Height = 330;
+        Height = 360;
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -52,7 +54,10 @@ internal sealed class LauncherForm : Form
         single.Click += async (_, _) => await LaunchAsync(multiplayer: false);
 
         var multi = new Button { Text = "Join Multiplayer Server", AutoSize = true, Height = 42 };
-        multi.Click += async (_, _) => await LaunchAsync(multiplayer: true);
+        multi.Click += async (_, _) => await LaunchAsync(multiplayer: true, createCharacter: false);
+
+        var create = new Button { Text = "Create Multiplayer Character", AutoSize = true, Height = 42 };
+        create.Click += async (_, _) => await LaunchAsync(multiplayer: true, createCharacter: true);
 
         var grid = new TableLayoutPanel
         {
@@ -83,6 +88,7 @@ internal sealed class LauncherForm : Form
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.LeftToRight };
         buttons.Controls.Add(single);
         buttons.Controls.Add(multi);
+        buttons.Controls.Add(create);
         grid.Controls.Add(buttons, 1, 3);
         grid.SetColumnSpan(buttons, 2);
         grid.Controls.Add(_status, 1, 4);
@@ -143,8 +149,20 @@ internal sealed class LauncherForm : Form
     {
         SkyrimPath = _skyrimPath.Text.Trim(),
         ServerAddress = _serverAddress.Text.Trim(),
-        ServerPort = (int)_serverPort.Value
+        ServerPort = (int)_serverPort.Value,
+        MultiplayerCharacterId = LoadStoredCharacterId()
     };
+
+    private ulong LoadStoredCharacterId()
+    {
+        try
+        {
+            if (File.Exists(_configPath))
+                return (JsonSerializer.Deserialize<LauncherConfig>(File.ReadAllText(_configPath)) ?? new()).MultiplayerCharacterId;
+        }
+        catch { }
+        return 0;
+    }
 
     private void LoadConfig()
     {
@@ -166,7 +184,7 @@ internal sealed class LauncherForm : Form
         File.WriteAllText(_configPath, JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true }));
     }
 
-    private async Task LaunchAsync(bool multiplayer)
+    private async Task LaunchAsync(bool multiplayer, bool createCharacter = false)
     {
         if (_launching) return;
         _launching = true;
@@ -178,6 +196,13 @@ internal sealed class LauncherForm : Form
             }
 
             var config = CurrentConfig();
+            if (createCharacter)
+            {
+                do
+                {
+                    config.MultiplayerCharacterId = BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(sizeof(ulong)));
+                } while (config.MultiplayerCharacterId == 0);
+            }
             ValidateSkyrim(config.SkyrimPath);
             SaveConfig(config);
             InstallBundledClientIfPresent(config.SkyrimPath);
@@ -193,10 +218,18 @@ internal sealed class LauncherForm : Form
                 if (!File.Exists(enabled)) throw new InvalidOperationException("SkyrimMultiplayer.dll is not installed.");
 
                 var ip = await ResolveServerAddressAsync(config.ServerAddress, _shutdown.Token);
+                var saveName = config.MultiplayerCharacterId == 0
+                    ? string.Empty
+                    : $"SkyrimMP_{config.MultiplayerCharacterId:X16}";
                 File.WriteAllText(
                     Path.Combine(pluginDir, "SkyrimMPClient.ini"),
-                    $"[Server]{Environment.NewLine}Address={ip}{Environment.NewLine}Port={config.ServerPort}{Environment.NewLine}");
-                _status.Text = $"{BuildInfo.Display}. Direct server: {ip}:{config.ServerPort}. Load SkyrimMP_* (or a post-Helgen save for first import).";
+                    $"[Server]{Environment.NewLine}Address={ip}{Environment.NewLine}Port={config.ServerPort}{Environment.NewLine}" +
+                    $"[Character]{Environment.NewLine}Mode={(createCharacter ? "Create" : "Join")}{Environment.NewLine}" +
+                    $"CharacterId={(config.MultiplayerCharacterId == 0 ? string.Empty : $"{config.MultiplayerCharacterId:X16}")}{Environment.NewLine}" +
+                    $"SaveName={saveName}{Environment.NewLine}");
+                _status.Text = createCharacter
+                    ? $"{BuildInfo.Display}. Creating a new multiplayer-only character on {ip}:{config.ServerPort}."
+                    : $"{BuildInfo.Display}. Direct server: {ip}:{config.ServerPort}.";
             }
             else
             {

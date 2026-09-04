@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "WorldBootstrapManager.h"
+#include "MultiplayerLaunchConfig.h"
 
 #include <atomic>
 #include <cstdio>
@@ -211,7 +212,12 @@ namespace SkyrimMP
         if (bootstrap.anchorRuntimeFormId != 0) {
             if (auto* saves = RE::BGSSaveLoadManager::GetSingleton()) {
                 char branchName[64]{};
-                std::snprintf(branchName, sizeof(branchName), "SkyrimMP_%08X", saves->currentCharacterID);
+                const auto& launch = GetMultiplayerLaunchConfig();
+                if (!launch.saveName.empty()) {
+                    std::snprintf(branchName, sizeof(branchName), "%s", launch.saveName.c_str());
+                } else {
+                    std::snprintf(branchName, sizeof(branchName), "SkyrimMP_%08X", saves->currentCharacterID);
+                }
                 saves->Save(branchName);
                 logs::info("[WORLD BOOTSTRAP SAVE] branch={} multiplayerCharacterCreated=true sourcePreserved=true", branchName);
             } else {

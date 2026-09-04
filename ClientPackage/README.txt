@@ -1,7 +1,7 @@
 SkyrimMultiplayer test client
 =============================
 
-This is PLAYABLE ALPHA 0.1.0-alpha.3. It is not a finished multiplayer release.
+This is PLAYABLE ALPHA 0.1.0-alpha.4. It is not a finished multiplayer release.
 
 Package channel: re-0.1-runtime-probe
 Wire protocol: 2
@@ -40,13 +40,19 @@ Play Single Player
 
 Join Multiplayer Server
 - Re-enables SkyrimMultiplayer.dll if Single Player mode disabled it.
-- Load a single-player save made after leaving the Helgen cave. On the first
-  multiplayer login, the server moves that character to Riverwood and creates
-  a separate SkyrimMP_<character-id> save. Continue multiplayer from that save;
-  the original single-player save is preserved.
+- Joins with the multiplayer character previously created by this launcher.
+- Existing pre-alpha.4 SkyrimMP_* saves can still be loaded manually.
 - Writes the chosen direct IPv4/UDP server target to the multiplayer client.
 - Launches Skyrim through skse64_loader.exe.
 - Uses the server IPv4 / hostname entered in the launcher.
+
+Create Multiplayer Character
+- Generates a new stable multiplayer-only character ID.
+- Starts a clean temporary player directly in Riverwood without importing a
+  single-player save, then opens Skyrim's native compact character creator.
+- Creates SkyrimMP_<character-id> only after the player confirms appearance.
+- Captures and synchronizes the chosen name, race, sex, weight, face, hair,
+  head parts and body appearance through the reliable profile channel.
 
 Both modes require a locally owned Skyrim Special Edition or Anniversary Edition
 installation and a matching SKSE64 build. The dedicated server remains headless

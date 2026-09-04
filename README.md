@@ -39,14 +39,14 @@ be between 1 and 65535, `MaxPlayers` must be nonzero, and `TickHz` must be from
 world, runs its protocol and socket self-tests, and only then begins listening.
 Press Ctrl+C for a graceful shutdown.
 
-## Single-player character import
+## Multiplayer character creation
 
-Use **Play Single Player** to create a character, finish Helgen, exit the cave,
-and make a normal save. Then use **Join Multiplayer Server** and load that save.
-The server recognizes the loaded Skyrim character, places it at Riverwood on
-its first multiplayer login, and the client immediately creates a separate
-`SkyrimMP_<character-id>` save. Later multiplayer sessions use that branch so
-multiplayer progress diverges without overwriting the original post-Helgen save.
+Use **Create Multiplayer Character** in the launcher. The launcher generates a
+stable multiplayer-only character ID, Skyrim bootstraps a temporary player
+directly into Riverwood, and the native compact character creator opens. After
+the player confirms their unique appearance, the client creates
+`SkyrimMP_<character-id>`. No single-player save is imported, changed, or used
+as the multiplayer identity.
 
 First-login completion is recorded in `server-data/first-logins.txt`, so a
 dedicated-server restart does not send established characters to Riverwood
@@ -61,9 +61,10 @@ online once at a time, preventing two clients from racing the same MP save.
 
 ## Current playable scope
 
-The current build provides the SP-to-MP save branch, first-login Riverwood
-placement, authenticated UDP sessions, reconnects, authoritative player
-entities, interest management, remote-player transform proxies, and safe
+The current build provides multiplayer-only character creation, first-login
+Riverwood placement, reliable appearance profiles, authenticated UDP sessions,
+reconnects, authoritative player entities, interest management, remote-player
+NPC-backed avatars, and safe
 event-driven player combat/death status and equipment replication. It is not
 yet a complete co-op Skyrim conversion: authoritative combat outcomes,
 animation state, inventories, quests, dialogue, and world interactions still
@@ -71,17 +72,19 @@ need dedicated synchronization and multi-client gameplay validation.
 
 ## Current status
 
-The current development protocol is **replication protocol 7** over wire
+The current development protocol is **replication protocol 9** over wire
 protocol 2. The following paths have been built and exercised against Skyrim
 SE/AE with SKSE64:
 
 - Separate launcher modes for normal single player and multiplayer.
-- Post-Helgen character import followed by a dedicated `SkyrimMP_*` save.
+- Multiplayer-only first-login character creation followed by a dedicated
+  `SkyrimMP_*` save; no SP save import is required.
 - First multiplayer login placement in Riverwood.
 - Persistent server-owned character location across reconnects and restarts.
 - Duplicate-character login rejection to protect MP save ownership.
 - Reliable session/bootstrap traffic and interest-based entity replication.
-- Native remote-player proxies with transform updates and despawning.
+- Unique NPC-backed remote-player avatars with reliable name, race, sex,
+  weight, face, hair, head-part and body appearance profiles.
 - Event-driven combat/death status transport without unsafe actor-value reads.
 - Bounded equipment-set replication from `TESEquipEvent`, authoritative
   persistence across server restarts, and game-thread remote-proxy
