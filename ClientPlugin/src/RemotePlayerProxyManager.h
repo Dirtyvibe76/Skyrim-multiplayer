@@ -22,6 +22,7 @@ namespace SkyrimMP
         bool inCombat{};
         bool hasActorState{};
         bool hasStatusState{};
+        PlayerAppearance appearance;
         std::uint16_t actionFlags{};
         std::vector<std::uint32_t> equippedFormIds;
     };
