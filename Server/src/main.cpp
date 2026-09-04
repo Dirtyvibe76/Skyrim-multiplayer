@@ -7,6 +7,7 @@
 #include "DedicatedServerLoop.h"
 #include "RuntimeEntityRegistry.h"
 #include "PartyQuestManager.h"
+#include "QuestEventProtocol.h"
 
 #include <windows.h>
 #include <bcrypt.h>
@@ -454,6 +455,7 @@ int main(int argc, char** argv)
                   << " duplicateStageEntriesMerged=" << programs.duplicateStageEntriesMerged
                   << " orderedTransitions=true retained=true\n";
         SkyrimMP::Server::RunPartyQuestManagerSelfTest();
+        SkyrimMP::Server::RunQuestEventProtocolSelfTest();
 
         std::cout << "[MODS] manifest=" << fs::absolute(config.manifestPath).string() << '\n';
         std::cout << "[PASS] server canonical database + complete gameplay payload import complete\n";

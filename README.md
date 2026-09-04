@@ -100,7 +100,9 @@ SE/AE with SKSE64:
   transitions, late-join projection, leave-time personal quest freezing, and
   idempotent per-character reward records. Versioned atomic disk persistence
   is loaded at server startup and flushed on graceful shutdown; client quest
-  event/projection messages are the next integration layer.
+  event/projection messages are the next integration layer. A bounded quest
+  wire contract now defines typed gameplay evidence and authoritative client
+  projections, with no client-side quest-completion operation.
 - Automated protocol, UDP loopback, session, duplicate-login, entity, and
   replication startup self-tests.
 
