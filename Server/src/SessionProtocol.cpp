@@ -116,11 +116,16 @@ namespace SkyrimMP::Server
             interest.magicka = ReadFloat(bytes, offset);
             interest.stamina = ReadFloat(bytes, offset);
             const auto actorFlags = ReadIntegral<std::uint8_t>(bytes, offset);
-            if ((actorFlags & ~0x0Fu) != 0) throw std::runtime_error("session interest actor flags invalid");
+            if ((actorFlags & ~0x1Fu) != 0) throw std::runtime_error("session interest actor flags invalid");
             interest.dead = (actorFlags & 0x01) != 0;
             interest.inCombat = (actorFlags & 0x02) != 0;
             interest.hasActorState = (actorFlags & 0x04) != 0;
             interest.hasStatusState = (actorFlags & 0x08) != 0;
+            interest.hasEquipmentState = (actorFlags & 0x10) != 0;
+            interest.actionFlags = ReadIntegral<std::uint16_t>(bytes, offset);
+            if ((interest.actionFlags & ~static_cast<std::uint16_t>((1u << 9) - 1)) != 0) {
+                throw std::runtime_error("session interest action flags invalid");
+            }
             const auto equipmentCount = ReadIntegral<std::uint8_t>(bytes, offset);
             if (equipmentCount > 32) throw std::runtime_error("session interest equipment limit exceeded");
             interest.equippedFormIds.reserve(equipmentCount);
@@ -195,7 +200,9 @@ namespace SkyrimMP::Server
         if (interest.inCombat) actorFlags |= 0x02;
         if (interest.hasActorState) actorFlags |= 0x04;
         if (interest.hasStatusState) actorFlags |= 0x08;
+        if (interest.hasEquipmentState) actorFlags |= 0x10;
         AppendIntegral(out, actorFlags);
+        AppendIntegral(out, interest.actionFlags);
         if (interest.equippedFormIds.size() > 32) throw std::runtime_error("session interest equipment limit exceeded");
         AppendIntegral(out, static_cast<std::uint8_t>(interest.equippedFormIds.size()));
         for (const auto formId : interest.equippedFormIds) AppendIntegral(out, formId);
@@ -410,6 +417,8 @@ namespace SkyrimMP::Server
         interest.transform = WorldTransform{ 1, 2, 3, 0, 0, 0 };
         interest.inCombat = true;
         interest.hasStatusState = true;
+        interest.hasEquipmentState = true;
+        interest.actionFlags = 0x0095;
         interest.equippedFormIds = { 0x00012EB7u, 0x0001397Eu };
         interest.exteriorRadiusCells = 1;
         const auto encoded = EncodeSessionInterest(7, interest);
@@ -419,7 +428,8 @@ namespace SkyrimMP::Server
         const auto decoded = DecodeInterest(encoded, offset);
         EnsureConsumed(encoded, offset);
         if (!decoded.location.hasCell || decoded.location.cell.localId != 0x1234 || decoded.transform.x != 1.0f ||
-            !decoded.inCombat || !decoded.hasStatusState || decoded.equippedFormIds != interest.equippedFormIds) {
+            !decoded.inCombat || !decoded.hasStatusState || !decoded.hasEquipmentState ||
+            decoded.actionFlags != interest.actionFlags || decoded.equippedFormIds != interest.equippedFormIds) {
             throw std::runtime_error("session interest self-test round-trip failed");
         }
         std::cout << "[SESSION] handshake=true protocolValidation=true loadOrderValidation=true maxPlayers=true heartbeat=true disconnect=true replication=true interest=true batching=true ackTracking=true\n";

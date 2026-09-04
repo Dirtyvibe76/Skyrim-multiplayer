@@ -94,6 +94,7 @@ namespace SkyrimMP::Server
                 if (snapshot.dead) actorFlags |= 0x01;
                 if (snapshot.inCombat) actorFlags |= 0x02;
                 AppendIntegral(out, actorFlags);
+                AppendIntegral(out, snapshot.actionFlags);
                 if (snapshot.equippedFormIds.size() > 32) throw std::runtime_error("snapshot equipment exceeds wire limit");
                 AppendIntegral(out, static_cast<std::uint8_t>(snapshot.equippedFormIds.size()));
                 for (const auto formId : snapshot.equippedFormIds) AppendIntegral(out, formId);
@@ -133,6 +134,10 @@ namespace SkyrimMP::Server
                 if ((actorFlags & ~0x03u) != 0) throw std::runtime_error("invalid actor-state flags on wire");
                 snapshot.dead = (actorFlags & 0x01) != 0;
                 snapshot.inCombat = (actorFlags & 0x02) != 0;
+                snapshot.actionFlags = ReadIntegral<std::uint16_t>(bytes, offset);
+                if ((snapshot.actionFlags & ~static_cast<std::uint16_t>((1u << 9) - 1)) != 0) {
+                    throw std::runtime_error("invalid action-state flags on wire");
+                }
                 const auto equipmentCount = ReadIntegral<std::uint8_t>(bytes, offset);
                 if (equipmentCount > 32) throw std::runtime_error("snapshot equipment exceeds wire limit");
                 snapshot.equippedFormIds.reserve(equipmentCount);
@@ -167,6 +172,7 @@ namespace SkyrimMP::Server
                 message.snapshot.magicka = 42.0f;
                 message.snapshot.stamina = 63.25f;
                 message.snapshot.inCombat = true;
+                message.snapshot.actionFlags = 0x0095;
                 message.snapshot.equippedFormIds = { 0x00012EB7u, 0x0001397Eu };
             }
             return message;

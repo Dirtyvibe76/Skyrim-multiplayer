@@ -37,6 +37,7 @@ namespace SkyrimMP
             std::uint64_t lastRevision{};
             std::uint32_t cellFormId{};
             std::uint32_t worldspaceFormId{};
+            std::uint16_t actionFlags{};
             std::vector<std::uint32_t> equippedFormIds;
         };
 
@@ -115,6 +116,29 @@ namespace SkyrimMP
             proxy.equippedFormIds = update.equippedFormIds;
         }
 
+        void ApplyActions(RE::Actor& actor, NativeProxy& proxy, const RemotePlayerProxyUpdate& update)
+        {
+            const auto changed = static_cast<std::uint16_t>(proxy.actionFlags ^ update.actionFlags);
+            if (changed == 0) return;
+            const auto enabled = [&](PlayerActionFlag flag) {
+                return (update.actionFlags & static_cast<std::uint16_t>(flag)) != 0;
+            };
+            const auto transitioned = [&](PlayerActionFlag flag) {
+                return (changed & static_cast<std::uint16_t>(flag)) != 0;
+            };
+
+            if (transitioned(kWeaponDrawn)) actor.DrawWeaponMagicHands(enabled(kWeaponDrawn));
+            if (transitioned(kSneaking)) actor.NotifyAnimationGraph(enabled(kSneaking) ? "SneakStart" : "SneakStop");
+            if (transitioned(kJumping) && enabled(kJumping)) actor.NotifyAnimationGraph("JumpStandingStart");
+            if (transitioned(kAttacking) && enabled(kAttacking)) actor.NotifyAnimationGraph("attackStart");
+            if (transitioned(kBlocking)) actor.NotifyAnimationGraph(enabled(kBlocking) ? "blockStart" : "blockStop");
+            if (transitioned(kCasting)) actor.NotifyAnimationGraph(enabled(kCasting) ? "MRh_SpellAimedStart" : "MRh_SpellAimedStop");
+
+            proxy.actionFlags = update.actionFlags;
+            logs::info("[REMOTE PLAYER ACTION] form={:08X} flags={:04X} changed={:04X} revision={}",
+                actor.GetFormID(), update.actionFlags, changed, update.revision);
+        }
+
         void DestroyProxy(std::uint64_t networkEntityId, NativeProxy& proxy, const char* reason)
         {
             if (auto* actor = ResolveActor(proxy)) {
@@ -190,6 +214,7 @@ namespace SkyrimMP
             });
             ApplyActorState(*actor, update);
             ApplyEquipment(*actor, proxyIt->second, update);
+            ApplyActions(*actor, proxyIt->second, update);
             return true;
         }
 
@@ -232,6 +257,7 @@ namespace SkyrimMP
             proxy.lastRevision = update.revision;
             ApplyActorState(*actor, update);
             ApplyEquipment(*actor, proxy, update);
+            ApplyActions(*actor, proxy, update);
             RemoteActorAdapter::Enqueue(RemoteTransform{
                 actor->GetFormID(),
                 AdapterSequence(update.revision),

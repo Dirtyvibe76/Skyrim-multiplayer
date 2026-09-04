@@ -3,6 +3,8 @@ release/
 .xmake/
 ClientLauncher/bin/
 ClientLauncher/obj/
+artifact/
+launcher-publish/
 server-data/
 *.pdb
 *.ilk

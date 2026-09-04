@@ -8,6 +8,7 @@ namespace SkyrimMP
     {
         bool dead{};
         bool inCombat{};
+        bool equipmentValid{};
         bool valid{};
         std::vector<std::uint32_t> equippedFormIds;
     };

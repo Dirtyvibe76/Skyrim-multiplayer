@@ -35,6 +35,7 @@ namespace SkyrimMP::Server
             snapshot.inCombat = entity.inCombat;
             snapshot.hasActorState = entity.hasActorState;
             snapshot.hasStatusState = entity.hasStatusState;
+            snapshot.actionFlags = entity.actionFlags;
             snapshot.equippedFormIds = entity.equippedFormIds;
             return snapshot;
         }

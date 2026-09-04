@@ -134,11 +134,16 @@ namespace SkyrimMP::Server
             requested.magicka = ReadFloat(bytes, offset);
             requested.stamina = ReadFloat(bytes, offset);
             const auto actorFlags = ReadIntegral<std::uint8_t>(bytes, offset);
-            if ((actorFlags & ~0x0Fu) != 0) throw std::runtime_error("authoritative player actor flags invalid");
+            if ((actorFlags & ~0x1Fu) != 0) throw std::runtime_error("authoritative player actor flags invalid");
             requested.dead = (actorFlags & 0x01) != 0;
             requested.inCombat = (actorFlags & 0x02) != 0;
             requested.hasActorState = (actorFlags & 0x04) != 0;
             requested.hasStatusState = (actorFlags & 0x08) != 0;
+            requested.hasEquipmentState = (actorFlags & 0x10) != 0;
+            requested.actionFlags = ReadIntegral<std::uint16_t>(bytes, offset);
+            if ((requested.actionFlags & ~static_cast<std::uint16_t>((1u << 9) - 1)) != 0) {
+                throw std::runtime_error("authoritative player action flags invalid");
+            }
             const auto equipmentCount = ReadIntegral<std::uint8_t>(bytes, offset);
             if (equipmentCount > 32) throw std::runtime_error("authoritative player equipment limit exceeded");
             requested.equippedFormIds.reserve(equipmentCount);
@@ -298,7 +303,7 @@ namespace SkyrimMP::Server
                 >> state.transform.x >> state.transform.y >> state.transform.z
                 >> state.transform.pitch >> state.transform.yaw >> state.transform.roll
                 >> state.health >> state.magicka >> state.stamina >> dead >> inCombat >> hasActor) ||
-            version != 1 || exterior > 1 || hasCell > 1 || hasWorld > 1 || cellKind > 1 || worldKind > 1 ||
+            (version != 1 && version != 2) || exterior > 1 || hasCell > 1 || hasWorld > 1 || cellKind > 1 || worldKind > 1 ||
             dead > 1 || inCombat > 1 || hasActor > 1) {
             throw std::runtime_error("persisted player state is malformed");
         }
@@ -316,6 +321,14 @@ namespace SkyrimMP::Server
         }
         if (hasStatus > 1) throw std::runtime_error("persisted player status flag is malformed");
         state.hasStatusState = hasStatus != 0;
+        state.hasEquipmentState = true;
+        if (version >= 2) {
+            unsigned actionFlags{};
+            if (!(input >> actionFlags) || actionFlags > ((1u << 9) - 1)) {
+                throw std::runtime_error("persisted player action flags are malformed");
+            }
+            state.actionFlags = static_cast<std::uint16_t>(actionFlags);
+        }
         unsigned equipmentCount{};
         if (input >> equipmentCount) {
             if (equipmentCount > 32) throw std::runtime_error("persisted player equipment limit exceeded");
@@ -350,13 +363,13 @@ namespace SkyrimMP::Server
             std::ofstream output(temporary, std::ios::trunc);
             if (!output) throw std::runtime_error("failed to open player-state temporary file");
             output << std::setprecision(9)
-                   << 1 << ' ' << player.location.exterior << ' ' << player.location.hasCell << ' ' << player.location.hasWorldspace << ' '
+                   << 2 << ' ' << player.location.exterior << ' ' << player.location.hasCell << ' ' << player.location.hasWorldspace << ' '
                    << (player.location.cell.kind == FormNamespaceKind::Light) << ' ' << player.location.cell.namespaceIndex << ' ' << player.location.cell.localId << ' '
                    << (player.location.worldspace.kind == FormNamespaceKind::Light) << ' ' << player.location.worldspace.namespaceIndex << ' ' << player.location.worldspace.localId << ' '
                    << player.transform.x << ' ' << player.transform.y << ' ' << player.transform.z << ' '
                    << player.transform.pitch << ' ' << player.transform.yaw << ' ' << player.transform.roll << ' '
                    << player.health << ' ' << player.magicka << ' ' << player.stamina << ' '
-                   << player.dead << ' ' << player.inCombat << ' ' << player.hasActorState << ' ' << player.hasStatusState
+                   << player.dead << ' ' << player.inCombat << ' ' << player.hasActorState << ' ' << player.hasStatusState << ' ' << player.actionFlags
                    << ' ' << player.equippedFormIds.size();
             for (const auto formId : player.equippedFormIds) output << ' ' << formId;
             output << '\n';
@@ -500,8 +513,11 @@ namespace SkyrimMP::Server
                             !UpdateRuntimeStatusState(registry, session.playerEntityId, actorState.dead, actorState.inCombat)) {
                             throw std::runtime_error("authoritative player initial status state failed");
                         }
-                        if (!UpdateRuntimeEquipmentState(registry, session.playerEntityId, actorState.equippedFormIds)) {
+                        if (actorState.hasEquipmentState && !UpdateRuntimeEquipmentState(registry, session.playerEntityId, actorState.equippedFormIds)) {
                             throw std::runtime_error("authoritative player initial equipment state failed");
+                        }
+                        if (!UpdateRuntimeActionState(registry, session.playerEntityId, actorState.actionFlags)) {
+                            throw std::runtime_error("authoritative player initial action state failed");
                         }
                         session.bootstrapAnchor = riverwood ? riverwood->sourceRecord :
                             (persisted && !SameLocationContext(persisted->location, requested.location) ?
@@ -563,6 +579,10 @@ namespace SkyrimMP::Server
                 if (!session.hasPlayerEntity || !FiniteTransform(requested.transform) ||
                     (requested.hasActorState && !ValidActorState(requested))) {
                     ++stats_.playerStateRejected;
+                    std::cerr << "[PLAYER-STATE-REJECT] endpoint=" << EndpointText(incoming.endpoint)
+                              << " session=" << session.sessionId << " character=" << session.clientNonce
+                              << " entity=" << (session.hasPlayerEntity ? session.playerEntityId : 0)
+                              << " reason=missing-entity-or-invalid-state\n";
                     continue;
                 }
 
@@ -572,8 +592,13 @@ namespace SkyrimMP::Server
                 }
                 if (!ReasonableRequestedMove(playerIt->second, requested)) {
                     ++stats_.playerStateRejected;
+                    std::cerr << "[PLAYER-STATE-REJECT] endpoint=" << EndpointText(incoming.endpoint)
+                              << " session=" << session.sessionId << " character=" << session.clientNonce
+                              << " entity=" << session.playerEntityId << " reason=unreasonable-move\n";
                     continue;
                 }
+                const auto previousActionFlags = playerIt->second.actionFlags;
+                const auto previousEquipment = playerIt->second.equippedFormIds;
                 if (!UpdateRuntimeEntity(registry, session.playerEntityId, requested.transform, requested.location)) {
                     throw std::runtime_error("authoritative player update failed");
                 }
@@ -585,8 +610,11 @@ namespace SkyrimMP::Server
                     !UpdateRuntimeStatusState(registry, session.playerEntityId, requested.dead, requested.inCombat)) {
                     throw std::runtime_error("authoritative player status-state update failed");
                 }
-                if (!UpdateRuntimeEquipmentState(registry, session.playerEntityId, requested.equippedFormIds)) {
+                if (requested.hasEquipmentState && !UpdateRuntimeEquipmentState(registry, session.playerEntityId, requested.equippedFormIds)) {
                     throw std::runtime_error("authoritative player equipment-state update failed");
+                }
+                if (!UpdateRuntimeActionState(registry, session.playerEntityId, requested.actionFlags)) {
+                    throw std::runtime_error("authoritative player action-state update failed");
                 }
                 ++stats_.playerStateApplied;
 
@@ -600,6 +628,19 @@ namespace SkyrimMP::Server
 
                 const auto updatedPlayerIt = registry.entities.find(session.playerEntityId);
                 if (updatedPlayerIt == registry.entities.end()) throw std::runtime_error("authoritative player missing after apply");
+                if (updatedPlayerIt->second.actionFlags != previousActionFlags) {
+                    std::cout << "[PLAYER-ACTION] endpoint=" << EndpointText(incoming.endpoint)
+                              << " session=" << session.sessionId << " character=" << session.clientNonce
+                              << " entity=" << session.playerEntityId << " revision=" << updatedPlayerIt->second.revision
+                              << " flags=" << updatedPlayerIt->second.actionFlags
+                              << " changed=" << (updatedPlayerIt->second.actionFlags ^ previousActionFlags) << '\n';
+                }
+                if (updatedPlayerIt->second.equippedFormIds != previousEquipment) {
+                    std::cout << "[PLAYER-EQUIPMENT] endpoint=" << EndpointText(incoming.endpoint)
+                              << " session=" << session.sessionId << " character=" << session.clientNonce
+                              << " entity=" << session.playerEntityId << " revision=" << updatedPlayerIt->second.revision
+                              << " items=" << updatedPlayerIt->second.equippedFormIds.size() << '\n';
+                }
                 session.interest = InterestFromPlayer(updatedPlayerIt->second);
                 session.hasInterest = true;
                 session.playerStateDirty = true;

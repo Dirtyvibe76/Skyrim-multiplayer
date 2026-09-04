@@ -274,4 +274,22 @@ namespace SkyrimMP::Server
         }
         return true;
     }
+
+    bool UpdateRuntimeActionState(
+        RuntimeEntityRegistry& registry,
+        NetworkEntityId id,
+        std::uint16_t actionFlags)
+    {
+        constexpr std::uint16_t knownActionFlags = (1u << 9) - 1;
+        if ((actionFlags & ~knownActionFlags) != 0) return false;
+        const auto it = registry.entities.find(id);
+        if (it == registry.entities.end() || it->second.kind != RuntimeEntityKind::Player) return false;
+        auto& entity = it->second;
+        if (entity.actionFlags != actionFlags) {
+            entity.actionFlags = actionFlags;
+            ++entity.revision;
+            ++registry.updates;
+        }
+        return true;
+    }
 }

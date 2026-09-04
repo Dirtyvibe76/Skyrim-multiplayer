@@ -47,6 +47,7 @@ namespace SkyrimMP::Server
         bool inCombat{};
         bool hasActorState{};
         bool hasStatusState{};
+        std::uint16_t actionFlags{};
         std::vector<std::uint32_t> equippedFormIds;
         std::uint64_t revision{};
     };
@@ -106,4 +107,9 @@ namespace SkyrimMP::Server
         RuntimeEntityRegistry& a_registry,
         NetworkEntityId a_id,
         const std::vector<std::uint32_t>& a_equippedFormIds);
+
+    bool UpdateRuntimeActionState(
+        RuntimeEntityRegistry& a_registry,
+        NetworkEntityId a_id,
+        std::uint16_t a_actionFlags);
 }

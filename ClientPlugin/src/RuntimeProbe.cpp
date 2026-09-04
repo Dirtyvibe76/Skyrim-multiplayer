@@ -71,6 +71,17 @@ namespace SkyrimMP
         state.dead = gameplay.dead;
         state.inCombat = gameplay.inCombat;
         state.hasStatusState = gameplay.valid;
+        state.hasEquipmentState = gameplay.equipmentValid;
+        if (player->IsWeaponDrawn()) state.actionFlags |= kWeaponDrawn;
+        if (player->IsMoving()) state.actionFlags |= kMoving;
+        if (player->IsRunning()) state.actionFlags |= kRunning;
+        if (player->IsSprinting()) state.actionFlags |= kSprinting;
+        if (player->IsSneaking()) state.actionFlags |= kSneaking;
+        if (player->IsInJumpState()) state.actionFlags |= kJumping;
+        if (player->IsAttacking()) state.actionFlags |= kAttacking;
+        if (player->IsBlocking()) state.actionFlags |= kBlocking;
+        bool casting = false;
+        if (player->GetGraphVariableBool("IsCasting", casting) && casting) state.actionFlags |= kCasting;
         state.equippedFormIds = gameplay.equippedFormIds;
 
         return state;

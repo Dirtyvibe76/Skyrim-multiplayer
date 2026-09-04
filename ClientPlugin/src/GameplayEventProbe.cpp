@@ -13,6 +13,7 @@ namespace SkyrimMP
         std::atomic_bool g_dead{ false };
         std::atomic_bool g_inCombat{ false };
         std::atomic_bool g_valid{ false };
+        std::atomic_bool g_equipmentValid{ false };
         std::mutex g_equipmentMutex;
         std::vector<std::uint32_t> g_equippedFormIds;
         constexpr std::size_t kMaxEquipmentItems = 32;
@@ -46,6 +47,7 @@ namespace SkyrimMP
         g_dead.store(false, std::memory_order_relaxed);
         g_inCombat.store(false, std::memory_order_relaxed);
         g_valid.store(true, std::memory_order_release);
+        g_equipmentValid.store(false, std::memory_order_release);
         std::scoped_lock lock(g_equipmentMutex);
         g_equippedFormIds.clear();
     }
@@ -56,6 +58,7 @@ namespace SkyrimMP
         result.valid = g_valid.load(std::memory_order_acquire);
         result.dead = g_dead.load(std::memory_order_relaxed);
         result.inCombat = g_inCombat.load(std::memory_order_relaxed);
+        result.equipmentValid = g_equipmentValid.load(std::memory_order_acquire);
         {
             std::scoped_lock lock(g_equipmentMutex);
             result.equippedFormIds = g_equippedFormIds;
@@ -94,6 +97,7 @@ namespace SkyrimMP
             return RE::BSEventNotifyControl::kContinue;
         }
         std::scoped_lock lock(g_equipmentMutex);
+        g_equipmentValid.store(true, std::memory_order_release);
         const auto it = std::find(g_equippedFormIds.begin(), g_equippedFormIds.end(), event->baseObject);
         if (event->equipped) {
             if (it == g_equippedFormIds.end() && g_equippedFormIds.size() < kMaxEquipmentItems) {
