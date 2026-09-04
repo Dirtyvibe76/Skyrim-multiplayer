@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace SkyrimMP
@@ -26,6 +28,24 @@ namespace SkyrimMP
         float z{};
     };
 
+    // Appearance uses runtime FormIDs on the client. The network layer converts
+    // stable forms to canonical record keys before transmission.
+    struct PlayerAppearance
+    {
+        std::uint64_t revision{};
+        bool valid{};
+        std::string displayName;
+        std::uint32_t raceFormId{};
+        std::uint8_t sex{};
+        float weight{};
+        std::uint32_t hairColorFormId{};
+        std::uint32_t faceDetailsFormId{};
+        std::uint32_t bodyTintColor{};
+        std::vector<std::uint32_t> headPartFormIds;
+        std::array<float, 19> faceMorphs{};
+        std::array<std::int32_t, 4> faceParts{};
+    };
+
     struct PlayerState
     {
         std::uint64_t characterId{};
@@ -46,5 +66,6 @@ namespace SkyrimMP
         bool hasEquipmentState{};
         std::uint16_t actionFlags{};
         std::vector<std::uint32_t> equippedFormIds;
+        PlayerAppearance appearance;
     };
 }
