@@ -1,25 +1,18 @@
 #include "pch.h"
 
 #include "RemotePlayerProxyManager.h"
+
 #include <algorithm>
 #include <deque>
 #include <mutex>
-#include <unordered_set>
 #include <unordered_map>
 
 namespace SkyrimMP
 {
     namespace
     {
-        // One client never renders its own authoritative player entity, so this
-        // supports every remote participant on the server's default 64-player cap.
+        // The local client never renders its own authoritative entity.
         constexpr std::size_t kMaxNativeProxies = 63;
-        // A PlayerCharacter ActorBase cannot safely be cloned into a live
-        // Skyrim cell.  Contact with the clone crashes both clients, even if
-        // its AI, collision, activation and gameplay mutations are disabled.
-        // Do not re-enable this until avatars are backed by a dedicated,
-        // server-described proxy representation rather than PlayerCharacter.
-        constexpr bool kNativePlayerActorProxyEnabled = false;
 
         enum class ProxyCommandKind : std::uint8_t
         {
@@ -41,15 +34,15 @@ namespace SkyrimMP
             std::uint64_t lastRevision{};
             std::uint32_t cellFormId{};
             std::uint32_t worldspaceFormId{};
-            std::uint16_t actionFlags{};
-            std::vector<std::uint32_t> equippedFormIds;
+            std::uint32_t raceFormId{};
+            std::uint8_t sex{};
+            std::uint64_t appearanceSeed{};
         };
 
         std::mutex g_mutex;
         std::deque<std::uint64_t> g_order;
         std::unordered_map<std::uint64_t, ProxyCommand> g_pending;
         std::unordered_map<std::uint64_t, NativeProxy> g_proxies;
-        std::unordered_set<std::uint64_t> g_suppressed;
 
         bool IsDynamicPlayerEntity(std::uint64_t id)
         {
@@ -66,11 +59,11 @@ namespace SkyrimMP
             const auto existing = g_pending.find(command.networkEntityId);
             if (existing != g_pending.end()) {
                 if (command.kind == ProxyCommandKind::Despawn) {
-                    existing->second = command;
+                    existing->second = std::move(command);
                     return;
                 }
                 if (existing->second.kind == ProxyCommandKind::Despawn) return;
-                if (command.update.revision >= existing->second.update.revision) existing->second = command;
+                if (command.update.revision >= existing->second.update.revision) existing->second = std::move(command);
                 return;
             }
 
@@ -84,98 +77,6 @@ namespace SkyrimMP
             return reference ? reference->As<RE::Actor>() : nullptr;
         }
 
-        void ApplyActorState(RE::Actor& actor, const RemotePlayerProxyUpdate& update)
-        {
-            if (update.hasActorState) {
-                actor.SetActorValue(RE::ActorValue::kHealth, update.health);
-                actor.SetActorValue(RE::ActorValue::kMagicka, update.magicka);
-                actor.SetActorValue(RE::ActorValue::kStamina, update.stamina);
-            }
-            if (update.hasStatusState) {
-                if (update.dead && !actor.IsDead()) actor.KillImpl(nullptr, 0.0f, false, false);
-                if (!update.dead && actor.IsDead()) actor.Resurrect(false, true);
-            }
-        }
-
-        void ApplyEquipment(RE::Actor& actor, NativeProxy& proxy, const RemotePlayerProxyUpdate& update)
-        {
-            auto* manager = RE::ActorEquipManager::GetSingleton();
-            if (!manager) return;
-            for (const auto formId : proxy.equippedFormIds) {
-                if (std::binary_search(update.equippedFormIds.begin(), update.equippedFormIds.end(), formId)) continue;
-                if (auto* object = RE::TESForm::LookupByID<RE::TESBoundObject>(formId)) {
-                    manager->UnequipObject(&actor, object, nullptr, 1, nullptr, false, true, false, true);
-                }
-            }
-            for (const auto formId : update.equippedFormIds) {
-                if (std::binary_search(proxy.equippedFormIds.begin(), proxy.equippedFormIds.end(), formId)) continue;
-                if (auto* object = RE::TESForm::LookupByID<RE::TESBoundObject>(formId)) {
-                    manager->EquipObject(&actor, object, nullptr, 1, nullptr, false, true, false, true);
-                }
-            }
-            proxy.equippedFormIds = update.equippedFormIds;
-        }
-
-        void ApplyTransform(RE::Actor& actor, const RemotePlayerProxyUpdate& update)
-        {
-            // This code runs from the main-thread proxy queue and already owns a
-            // validated actor pointer.  Do not round-trip through TESForm lookup:
-            // newly placed dynamic refs are not reliably discoverable by form ID
-            // during their first frames.
-            actor.SetPosition(RE::NiPoint3{ update.position.x, update.position.y, update.position.z }, true);
-            actor.data.angle.x = update.rotation.x;
-            actor.data.angle.y = update.rotation.y;
-            actor.data.angle.z = update.rotation.z;
-        }
-
-        void InitializeVisualOnlyProxy(RE::Actor& actor, std::uint64_t networkEntityId)
-        {
-            // A placed ActorBase is only a temporary visual stand-in.  It must
-            // never participate in Skyrim gameplay: animation graph commands,
-            // inventory/equipment transactions, actor values, death handling,
-            // and AI all touch state that belongs to a real actor and caused
-            // both clients to crash when the stand-ins met or were activated.
-            actor.SetTemporary();
-            actor.SetActivationBlocked(true);
-            actor.SetCollision(false);
-            actor.EnableAI(false);
-            logs::info("[REMOTE PLAYER PROXY READY] networkId={:016X} form={:08X} mode=visual-only",
-                networkEntityId, actor.GetFormID());
-        }
-
-        void ApplyActions(RE::Actor& actor, NativeProxy& proxy, const RemotePlayerProxyUpdate& update)
-        {
-            const auto changed = static_cast<std::uint16_t>(proxy.actionFlags ^ update.actionFlags);
-            if (changed == 0) return;
-            const auto enabled = [&](PlayerActionFlag flag) {
-                return (update.actionFlags & static_cast<std::uint16_t>(flag)) != 0;
-            };
-            const auto transitioned = [&](PlayerActionFlag flag) {
-                return (changed & static_cast<std::uint16_t>(flag)) != 0;
-            };
-
-            if (transitioned(kWeaponDrawn)) actor.DrawWeaponMagicHands(enabled(kWeaponDrawn));
-            if (transitioned(kSneaking)) actor.NotifyAnimationGraph(enabled(kSneaking) ? "SneakStart" : "SneakStop");
-            if (transitioned(kJumping) && enabled(kJumping)) actor.NotifyAnimationGraph("JumpStandingStart");
-            if (transitioned(kAttacking) && enabled(kAttacking)) actor.NotifyAnimationGraph("attackStart");
-            if (transitioned(kBlocking)) actor.NotifyAnimationGraph(enabled(kBlocking) ? "blockStart" : "blockStop");
-            if (transitioned(kCasting)) actor.NotifyAnimationGraph(enabled(kCasting) ? "MRh_SpellAimedStart" : "MRh_SpellAimedStop");
-
-            proxy.actionFlags = update.actionFlags;
-            logs::info("[REMOTE PLAYER ACTION] form={:08X} flags={:04X} changed={:04X} revision={}",
-                actor.GetFormID(), update.actionFlags, changed, update.revision);
-        }
-
-        void DestroyProxy(std::uint64_t networkEntityId, NativeProxy& proxy, const char* reason)
-        {
-            if (auto* actor = ResolveActor(proxy); actor && actor->Get3D()) {
-                actor->EnableAI(false);
-                actor->SetCollision(false);
-                actor->Disable();
-            }
-            logs::info("[REMOTE PLAYER PROXY DESPAWN] networkId={:016X} reason={}", networkEntityId, reason);
-        }
-
         bool LocalContextMatches(const RemotePlayerProxyUpdate& update, RE::PlayerCharacter* player)
         {
             if (!player || update.cellFormId == 0) return false;
@@ -187,17 +88,73 @@ namespace SkyrimMP
             return localWorld == update.worldspaceFormId;
         }
 
+        RE::TESNPC* SelectAvatarBase(const RemotePlayerProxyUpdate& update)
+        {
+            if (!update.appearance.valid || update.appearance.raceFormId == 0 || update.appearance.sex > 1) return nullptr;
+
+            auto* race = RE::TESForm::LookupByID<RE::TESRace>(update.appearance.raceFormId);
+            if (!race || !race->GetPlayable()) return nullptr;
+
+            auto* faceData = race->faceRelatedData[update.appearance.sex];
+            if (!faceData || !faceData->presetNPCs || faceData->presetNPCs->empty()) return nullptr;
+
+            auto& presets = *faceData->presetNPCs;
+            const auto count = presets.size();
+            const auto seed = update.appearance.appearanceSeed != 0 ? update.appearance.appearanceSeed : update.networkEntityId;
+            const auto first = static_cast<std::size_t>(seed % count);
+            for (std::size_t offset = 0; offset < count; ++offset) {
+                if (auto* preset = presets[(first + offset) % count]) return preset;
+            }
+            return nullptr;
+        }
+
+        void InitializeVisualOnlyProxy(RE::Actor& actor, const RemotePlayerProxyUpdate& update)
+        {
+            // Remote players are normal NPC-backed references, never clones of
+            // PlayerCharacter. Keep Skyrim gameplay systems off the shell until
+            // explicit replicated interaction handling is implemented.
+            actor.SetTemporary();
+            actor.SetActivationBlocked(true);
+            actor.SetCollision(false);
+            actor.EnableAI(false);
+            logs::info(
+                "[REMOTE PLAYER AVATAR READY] networkId={:016X} form={:08X} race={:08X} sex={} seed={:016X} mode=npc-visual-shell",
+                update.networkEntityId,
+                actor.GetFormID(),
+                update.appearance.raceFormId,
+                update.appearance.sex,
+                update.appearance.appearanceSeed);
+        }
+
+        void ApplyTransform(RE::Actor& actor, const RemotePlayerProxyUpdate& update)
+        {
+            actor.SetPosition(RE::NiPoint3{ update.position.x, update.position.y, update.position.z }, true);
+            actor.data.angle.x = update.rotation.x;
+            actor.data.angle.y = update.rotation.y;
+            actor.data.angle.z = update.rotation.z;
+            actor.Update3DPosition(true);
+        }
+
+        void DestroyProxy(std::uint64_t networkEntityId, NativeProxy& proxy, const char* reason)
+        {
+            if (auto* actor = ResolveActor(proxy)) {
+                actor->SetActivationBlocked(true);
+                actor->EnableAI(false);
+                actor->SetCollision(false);
+                actor->Disable();
+            }
+            logs::info("[REMOTE PLAYER AVATAR DESPAWN] networkId={:016X} reason={}", networkEntityId, reason);
+        }
+
+        bool AppearanceChanged(const NativeProxy& proxy, const RemotePlayerProxyUpdate& update)
+        {
+            return proxy.raceFormId != update.appearance.raceFormId ||
+                proxy.sex != update.appearance.sex ||
+                proxy.appearanceSeed != update.appearance.appearanceSeed;
+        }
+
         bool SpawnProxy(std::uint64_t networkEntityId, const RemotePlayerProxyUpdate& update)
         {
-            if (!kNativePlayerActorProxyEnabled) {
-                if (g_suppressed.insert(networkEntityId).second) {
-                    logs::warn(
-                        "[REMOTE PLAYER PROXY SUPPRESSED] networkId={:016X} reason=unsafe PlayerCharacter clone disabled",
-                        networkEntityId);
-                }
-                return false;
-            }
-
             if (g_proxies.size() >= kMaxNativeProxies) {
                 logs::warn("[REMOTE PLAYER DROP] networkId={:016X} reason=controlled proxy limit limit={}", networkEntityId, kMaxNativeProxies);
                 return false;
@@ -206,16 +163,43 @@ namespace SkyrimMP
             auto* player = RE::PlayerCharacter::GetSingleton();
             if (!LocalContextMatches(update, player)) return false;
 
-            auto* base = player->GetActorBase();
-            if (!base) {
-                logs::warn("[REMOTE PLAYER DROP] networkId={:016X} reason=local player base unavailable", networkEntityId);
+            auto* avatarBase = SelectAvatarBase(update);
+            if (!avatarBase) {
+                logs::warn(
+                    "[REMOTE PLAYER DROP] networkId={:016X} reason=no safe race preset race={:08X} sex={} appearanceValid={}",
+                    networkEntityId,
+                    update.appearance.raceFormId,
+                    update.appearance.sex,
+                    update.appearance.valid);
                 return false;
             }
 
-            auto placed = player->PlaceObjectAtMe(base, false);
-            auto* actor = placed ? placed->As<RE::Actor>() : nullptr;
+            auto* cell = player->GetParentCell();
+            auto* handler = RE::TESDataHandler::GetSingleton();
+            if (!cell || !handler) return false;
+            auto* world = cell->GetRuntimeData().worldSpace;
+
+            // Create the reference directly at the authoritative remote transform.
+            // The old path called player->PlaceObjectAtMe(player->GetActorBase()),
+            // which both cloned PlayerCharacter and briefly created that clone on
+            // top of the local player. Contact with that invalid actor crashed.
+            const RE::NiPoint3 position{ update.position.x, update.position.y, update.position.z };
+            const RE::NiPoint3 rotation{ update.rotation.x, update.rotation.y, update.rotation.z };
+            const auto handle = handler->CreateReferenceAtLocation(
+                avatarBase,
+                position,
+                rotation,
+                cell,
+                world,
+                nullptr,
+                nullptr,
+                RE::ObjectRefHandle(),
+                false,
+                true);
+            auto reference = handle.get();
+            auto* actor = reference ? reference->As<RE::Actor>() : nullptr;
             if (!actor) {
-                logs::warn("[REMOTE PLAYER DROP] networkId={:016X} reason=PlaceObjectAtMe failed", networkEntityId);
+                logs::warn("[REMOTE PLAYER DROP] networkId={:016X} reason=CreateReferenceAtLocation failed", networkEntityId);
                 return false;
             }
 
@@ -224,30 +208,34 @@ namespace SkyrimMP
             proxy.lastRevision = update.revision;
             proxy.cellFormId = update.cellFormId;
             proxy.worldspaceFormId = update.worldspaceFormId;
+            proxy.raceFormId = update.appearance.raceFormId;
+            proxy.sex = update.appearance.sex;
+            proxy.appearanceSeed = update.appearance.appearanceSeed;
             const auto [proxyIt, inserted] = g_proxies.emplace(networkEntityId, std::move(proxy));
-            if (!inserted) return false;
+            if (!inserted) {
+                actor->Disable();
+                return false;
+            }
 
             logs::info(
-                "[REMOTE PLAYER PROXY SPAWN] networkId={:016X} form={:08X} cell={:08X} world={:08X} revision={} active={}/{}",
+                "[REMOTE PLAYER AVATAR SPAWN] networkId={:016X} form={:08X} base={:08X} cell={:08X} world={:08X} revision={} active={}/{}",
                 networkEntityId,
                 actor->GetFormID(),
+                avatarBase->GetFormID(),
                 update.cellFormId,
                 update.worldspaceFormId,
                 update.revision,
                 g_proxies.size(),
                 kMaxNativeProxies);
 
-            // PlaceObjectAtMe returns before the actor's 3D can exist.  Calling
-            // inventory, animation, or actor-value APIs in that window caused a
-            // two-client crash.  Keep the handle and initialize on a later
-            // game-thread update only after Skyrim reports a loaded 3D.
             if (!actor->Get3D()) {
-                logs::info("[REMOTE PLAYER PROXY PENDING] networkId={:016X} form={:08X} reason=waiting-for-3D",
+                logs::info("[REMOTE PLAYER AVATAR PENDING] networkId={:016X} form={:08X} reason=waiting-for-3D",
                     networkEntityId, actor->GetFormID());
                 return true;
             }
+
             proxyIt->second.initialized = true;
-            InitializeVisualOnlyProxy(*actor, networkEntityId);
+            InitializeVisualOnlyProxy(*actor, update);
             ApplyTransform(*actor, update);
             return true;
         }
@@ -273,8 +261,11 @@ namespace SkyrimMP
             auto& proxy = proxyIt->second;
             if (update.revision < proxy.lastRevision) return;
 
-            if (proxy.cellFormId != update.cellFormId || proxy.worldspaceFormId != update.worldspaceFormId) {
-                DestroyProxy(update.networkEntityId, proxy, "remote context changed");
+            if (proxy.cellFormId != update.cellFormId ||
+                proxy.worldspaceFormId != update.worldspaceFormId ||
+                AppearanceChanged(proxy, update)) {
+                DestroyProxy(update.networkEntityId, proxy,
+                    AppearanceChanged(proxy, update) ? "appearance changed" : "remote context changed");
                 g_proxies.erase(proxyIt);
                 SpawnProxy(update.networkEntityId, update);
                 return;
@@ -282,16 +273,14 @@ namespace SkyrimMP
 
             auto* actor = ResolveActor(proxy);
             if (!actor || !actor->Get3D()) {
-                // Streaming has not completed.  Never churn the native ref or
-                // invoke actor APIs until it is ready.
-                logs::debug("[REMOTE PLAYER PROXY WAIT] networkId={:016X} revision={} reason=actor-3D-unavailable",
+                logs::debug("[REMOTE PLAYER AVATAR WAIT] networkId={:016X} revision={} reason=actor-3D-unavailable",
                     update.networkEntityId, update.revision);
                 return;
             }
 
             if (!proxy.initialized) {
                 proxy.initialized = true;
-                InitializeVisualOnlyProxy(*actor, update.networkEntityId);
+                InitializeVisualOnlyProxy(*actor, update);
             }
 
             proxy.lastRevision = update.revision;
@@ -359,9 +348,8 @@ namespace SkyrimMP
         std::scoped_lock lock(g_mutex);
         g_order.clear();
         g_pending.clear();
-        g_suppressed.clear();
         for (auto& [id, proxy] : g_proxies) DestroyProxy(id, proxy, "reset");
         g_proxies.clear();
-        logs::info("[REMOTE PLAYER PROXY] reset maxNativeProxies={}", kMaxNativeProxies);
+        logs::info("[REMOTE PLAYER AVATAR] reset maxNativeProxies={}", kMaxNativeProxies);
     }
 }
