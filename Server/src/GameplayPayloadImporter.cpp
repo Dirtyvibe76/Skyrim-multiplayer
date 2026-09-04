@@ -1,6 +1,8 @@
 #include "GameplayPayloadImporter.h"
 #include "TypedGameplayDatabase.h"
 #include "WorldReferenceDatabase.h"
+#include "ImportedQuestDatabase.h"
+#include "RuntimeEntityRegistry.h"
 
 #include <zlib.h>
 
@@ -226,6 +228,10 @@ namespace SkyrimMP::Server
         // Independently materialize and validate typed authoritative gameplay definitions.
         const auto typed = BuildTypedGameplayDatabase(a_database, a_stack);
         (void)typed;
+
+        summary.questDefinitions = std::make_shared<ImportedQuestDatabase>(
+            BuildImportedQuestDatabase(a_database, a_stack));
+        if (a_runtimeRegistry) a_runtimeRegistry->questDefinitions = summary.questDefinitions;
 
         // Materialize authoritative placed-world references. REFR/ACHR NAME targets are
         // canonicalized against the winning-record database and ACHR bases must resolve to NPC_.

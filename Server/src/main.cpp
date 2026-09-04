@@ -435,6 +435,16 @@ int main(int argc, char** argv)
             }
             std::cout << '\n';
         }
+        const auto& quests = *payloadSummary.questDefinitions;
+        std::cout << "[QUEST-IMPORT] definitions=" << quests.byStableKey.size()
+                  << " stages=" << quests.stages
+                  << " objectives=" << quests.objectives
+                  << " aliases=" << quests.aliases
+                  << " conditions=" << quests.conditions
+                  << " recordDriven=" << quests.recordDriven
+                  << " adapterRequired=" << quests.adapterRequired
+                  << " unsupported=" << quests.unsupported
+                  << " retained=true deterministicKeys=true\n";
 
         std::cout << "[MODS] manifest=" << fs::absolute(config.manifestPath).string() << '\n';
         std::cout << "[PASS] server canonical database + complete gameplay payload import complete\n";

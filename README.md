@@ -88,6 +88,11 @@ SE/AE with SKSE64:
   equip/unequip reconciliation. Live client/server add, replace, reconnect,
   and persistence paths are verified; visual two-client proxy validation is
   still required on two simultaneous game clients.
+- Authoritative `QUST` definition import retained by the server runtime, with
+  deterministic canonical keys and typed stages, objectives, aliases, and
+  condition counts. Startup classifies every winning quest as record-driven,
+  adapter-required, or unsupported instead of treating Papyrus-heavy quests
+  as automatically safe.
 - Automated protocol, UDP loopback, session, duplicate-login, entity, and
   replication startup self-tests.
 
@@ -140,8 +145,9 @@ Work required before calling this a complete co-op game:
    and stamina, without relying on unsafe early-frame actor virtual calls.
 4. Inventory/container transactions with server ownership, atomic validation,
    rollback, and duplicate-item protection.
-5. Shared quest policy and synchronization for stages, objectives, aliases,
-   scenes, dialogue, and quest-specific world changes.
+5. Compile imported quest definitions into executable server quest programs;
+   add persistent parties, shared quest instances, validated progress events,
+   client projections, world transitions, and idempotent reward transactions.
 6. Authoritative activation state for doors, locks, traps, furniture, dropped
    objects, crafting, harvesting, and other persistent world interactions.
 7. NPC AI ownership and migration so exactly one authority drives each actor.

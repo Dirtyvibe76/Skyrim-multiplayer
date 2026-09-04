@@ -1,10 +1,12 @@
 #pragma once
 
 #include "CanonicalRecordDatabase.h"
+#include "ImportedQuestDatabase.h"
 #include "PluginStack.h"
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -33,6 +35,7 @@ namespace SkyrimMP::Server
         std::uint64_t editorIds{};
         std::map<std::string, std::uint64_t> typeCounts;
         std::vector<GameplayPayloadSample> samples;
+        std::shared_ptr<const ImportedQuestDatabase> questDefinitions;
     };
 
     GameplayPayloadSummary ImportGameplayPayloads(

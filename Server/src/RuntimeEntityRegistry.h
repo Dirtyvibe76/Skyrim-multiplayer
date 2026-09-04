@@ -6,11 +6,13 @@
 #include "WorldSpatialContext.h"
 
 #include <cstdint>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
 namespace SkyrimMP::Server
 {
+    struct ImportedQuestDatabase;
     using NetworkEntityId = std::uint64_t;
 
     enum class RuntimeEntityKind : std::uint8_t
@@ -50,6 +52,7 @@ namespace SkyrimMP::Server
 
     struct RuntimeEntityRegistry
     {
+        std::shared_ptr<const ImportedQuestDatabase> questDefinitions;
         std::unordered_map<NetworkEntityId, RuntimeEntityState> entities;
         std::unordered_map<CanonicalRecordKey, NetworkEntityId, CanonicalRecordKeyHash> sourceToNetwork;
         std::unordered_map<CanonicalRecordKey, std::vector<NetworkEntityId>, CanonicalRecordKeyHash> interiorCells;
