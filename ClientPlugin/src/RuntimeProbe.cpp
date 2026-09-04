@@ -5,11 +5,14 @@
 #include "RuntimeProbe.h"
 
 #include <algorithm>
+#include <bit>
 
 namespace SkyrimMP
 {
     namespace
     {
+        constexpr std::size_t kMaxAppearanceTintLayers = 32;
+
         bool MeaningfullyDifferent(float left, float right, float epsilon)
         {
             return std::abs(left - right) > epsilon;
@@ -55,6 +58,12 @@ namespace SkyrimMP
             for (const auto formId : appearance.headPartFormIds) mix(formId);
             for (const auto value : appearance.faceMorphs) mix(std::bit_cast<std::uint32_t>(value));
             for (const auto value : appearance.faceParts) mix(static_cast<std::uint32_t>(value));
+            for (const auto& layer : appearance.tintLayers) {
+                mix(layer.tintIndex);
+                mix(layer.preset);
+                mix(layer.interpolationValue);
+                mix(layer.color);
+            }
             return hash == 0 ? 1 : hash;
         }
 
@@ -74,7 +83,8 @@ namespace SkyrimMP
             appearance.bodyTintColor =
                 static_cast<std::uint32_t>(base->bodyTintColor.red) |
                 (static_cast<std::uint32_t>(base->bodyTintColor.green) << 8) |
-                (static_cast<std::uint32_t>(base->bodyTintColor.blue) << 16);
+                (static_cast<std::uint32_t>(base->bodyTintColor.blue) << 16) |
+                (static_cast<std::uint32_t>(base->bodyTintColor.alpha) << 24);
 
             if (base->headRelatedData) {
                 if (base->headRelatedData->hairColor) appearance.hairColorFormId = base->headRelatedData->hairColor->GetFormID();
@@ -90,6 +100,23 @@ namespace SkyrimMP
             if (base->faceData) {
                 for (std::size_t i = 0; i < appearance.faceMorphs.size(); ++i) appearance.faceMorphs[i] = base->faceData->morphs[i];
                 for (std::size_t i = 0; i < appearance.faceParts.size(); ++i) appearance.faceParts[i] = base->faceData->parts[i];
+            }
+
+            if (base->tintLayers) {
+                appearance.tintLayers.reserve(std::min<std::size_t>(base->tintLayers->size(), kMaxAppearanceTintLayers));
+                for (auto* layer : *base->tintLayers) {
+                    if (!layer || appearance.tintLayers.size() >= kMaxAppearanceTintLayers) break;
+                    PlayerTintLayer captured;
+                    captured.tintIndex = layer->tintIndex;
+                    captured.preset = layer->preset;
+                    captured.interpolationValue = layer->interpolationValue;
+                    captured.color =
+                        static_cast<std::uint32_t>(layer->tintColor.red) |
+                        (static_cast<std::uint32_t>(layer->tintColor.green) << 8) |
+                        (static_cast<std::uint32_t>(layer->tintColor.blue) << 16) |
+                        (static_cast<std::uint32_t>(layer->tintColor.alpha) << 24);
+                    appearance.tintLayers.push_back(captured);
+                }
             }
 
             appearance.revision = AppearanceRevision(appearance);
@@ -146,13 +173,14 @@ namespace SkyrimMP
 
         if (state.appearance.valid && (firstSample || state.appearance.revision != previous.appearance.revision)) {
             logs::info(
-                "[APPEARANCE-CAPTURE] revision={:016X} name={} race={:08X} sex={} weight={:.3f} headParts={}",
+                "[APPEARANCE-CAPTURE] revision={:016X} name={} race={:08X} sex={} weight={:.3f} headParts={} tintLayers={}",
                 state.appearance.revision,
                 state.appearance.displayName,
                 state.appearance.raceFormId,
                 state.appearance.sex,
                 state.appearance.weight,
-                state.appearance.headPartFormIds.size());
+                state.appearance.headPartFormIds.size(),
+                state.appearance.tintLayers.size());
         }
 
         const bool changed =
