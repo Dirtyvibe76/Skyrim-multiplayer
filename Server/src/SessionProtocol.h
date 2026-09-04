@@ -21,7 +21,8 @@ namespace SkyrimMP::Server
         Disconnect = 5,
         Interest = 6,
         BootstrapRequest = 7,
-        WorldBootstrap = 8
+        WorldBootstrap = 8,
+        AppearanceProfile = 9
     };
 
     enum class SessionRejectReason : std::uint8_t
@@ -49,6 +50,8 @@ namespace SkyrimMP::Server
         bool hasBootstrapAnchor{};
         bool firstLogin{};
         bool playerStateDirty{};
+        PlayerAppearance appearance;
+        bool hasAppearance{};
         std::chrono::steady_clock::time_point lastPlayerStatePersist{};
         std::unordered_map<std::uint32_t, std::vector<ReplicationMessage>> reliableReplicationByPacket;
     };
@@ -77,6 +80,8 @@ namespace SkyrimMP::Server
         std::uint64_t riverwoodFirstLogins{};
         std::uint64_t playerStateRestores{};
         std::uint64_t playerStateSaves{};
+        std::uint64_t appearanceProfilesReceived{};
+        std::uint64_t appearanceProfilesSent{};
     };
 
     class ServerSessionManager
