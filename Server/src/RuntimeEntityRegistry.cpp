@@ -268,6 +268,28 @@ namespace SkyrimMP::Server
         return true;
     }
 
+    bool UpdateRuntimeAppearanceState(
+        RuntimeEntityRegistry& registry,
+        NetworkEntityId id,
+        const PlayerAppearance& appearance)
+    {
+        if (!appearance.valid || appearance.raceFormId == 0 || appearance.sex > 1 ||
+            !std::isfinite(appearance.weight) || appearance.weight < 0.0f || appearance.weight > 100.0f ||
+            appearance.appearanceSeed == 0) return false;
+        const auto it = registry.entities.find(id);
+        if (it == registry.entities.end() || it->second.kind != RuntimeEntityKind::Player) return false;
+        auto& entity = it->second;
+        const bool changed = !entity.appearance.valid || entity.appearance.raceFormId != appearance.raceFormId ||
+            entity.appearance.sex != appearance.sex || entity.appearance.weight != appearance.weight ||
+            entity.appearance.appearanceSeed != appearance.appearanceSeed;
+        entity.appearance = appearance;
+        if (changed) {
+            ++entity.revision;
+            ++registry.updates;
+        }
+        return true;
+    }
+
     bool UpdateRuntimeEquipmentState(
         RuntimeEntityRegistry& registry,
         NetworkEntityId id,
