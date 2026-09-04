@@ -42,7 +42,7 @@ jobs:
         run: |
           $expectedVersion = '0.1.0-alpha.3'
           $expectedWire = '2'
-          $expectedReplication = '8'
+          $expectedReplication = '9'
           $files = @('Shared\BuildInfo.h', 'ClientLauncher\BuildInfo.cs', 'Installer\SkyrimMP.iss', 'ClientPackage\README.txt')
           foreach ($file in $files) {
             $text = Get-Content $file -Raw
