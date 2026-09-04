@@ -118,7 +118,21 @@ namespace SkyrimMP
             actor.data.angle.x = update.rotation.x;
             actor.data.angle.y = update.rotation.y;
             actor.data.angle.z = update.rotation.z;
-            actor.Update3DPosition(true);
+        }
+
+        void InitializeVisualOnlyProxy(RE::Actor& actor, std::uint64_t networkEntityId)
+        {
+            // A placed ActorBase is only a temporary visual stand-in.  It must
+            // never participate in Skyrim gameplay: animation graph commands,
+            // inventory/equipment transactions, actor values, death handling,
+            // and AI all touch state that belongs to a real actor and caused
+            // both clients to crash when the stand-ins met or were activated.
+            actor.SetTemporary();
+            actor.SetActivationBlocked(true);
+            actor.SetCollision(false);
+            actor.EnableAI(false);
+            logs::info("[REMOTE PLAYER PROXY READY] networkId={:016X} form={:08X} mode=visual-only",
+                networkEntityId, actor.GetFormID());
         }
 
         void ApplyActions(RE::Actor& actor, NativeProxy& proxy, const RemotePlayerProxyUpdate& update)
@@ -216,14 +230,8 @@ namespace SkyrimMP
                 return true;
             }
             proxyIt->second.initialized = true;
-            actor->SetTemporary();
-            actor->SetActivationBlocked(true);
-            actor->SetCollision(false);
-            actor->EnableAI(false);
+            InitializeVisualOnlyProxy(*actor, networkEntityId);
             ApplyTransform(*actor, update);
-            ApplyActorState(*actor, update);
-            ApplyEquipment(*actor, proxyIt->second, update);
-            ApplyActions(*actor, proxyIt->second, update);
             return true;
         }
 
@@ -266,16 +274,10 @@ namespace SkyrimMP
 
             if (!proxy.initialized) {
                 proxy.initialized = true;
-                actor->SetTemporary();
-                actor->SetActivationBlocked(true);
-                actor->SetCollision(false);
-                actor->EnableAI(false);
+                InitializeVisualOnlyProxy(*actor, update.networkEntityId);
             }
 
             proxy.lastRevision = update.revision;
-            ApplyActorState(*actor, update);
-            ApplyEquipment(*actor, proxy, update);
-            ApplyActions(*actor, proxy, update);
             ApplyTransform(*actor, update);
         }
     }
