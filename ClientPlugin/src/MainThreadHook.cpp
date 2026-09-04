@@ -4,6 +4,8 @@
 #include "RuntimeProbe.h"
 #include "ObjectLoadProbe.h"
 #include "RemoteActorAdapter.h"
+#include "RemotePlayerProxyManager.h"
+#include "WorldBootstrapManager.h"
 #include "ActorState.h"
 
 #include <cmath>
@@ -242,7 +244,8 @@ namespace SkyrimMP
         g_relevantActors.clear();
         g_lastRelevantState.clear();
         RemoteActorAdapter::Reset();
-        logs::info("[CLIENT] actor caches and remote adapter reset");
+        RemotePlayerProxyManager::Reset();
+        logs::info("[CLIENT] actor caches, remote actor adapter, and remote player proxies reset");
     }
 
     void MainThreadHook::Update(RE::Actor* a_actor, float a_delta)
@@ -257,6 +260,12 @@ namespace SkyrimMP
             logs::info("[RE-0.7a] PlayerCharacter::Update hook executing");
             firstUpdateLogged = true;
         }
+
+        // Network traffic is decoded on the worker thread, but every Skyrim
+        // object mutation must happen on the game thread. These queues used to
+        // be populated and never drained, leaving the server bootstrap unapplied
+        // and remote-player avatars permanently invisible.
+        WorldBootstrapManager::ApplyPending();
 
         const auto now = std::chrono::steady_clock::now();
 
@@ -321,6 +330,7 @@ namespace SkyrimMP
             lastActorSample = now;
         }
 
+        RemotePlayerProxyManager::ApplyPending(32);
         RemoteActorAdapter::ApplyPending(32);
     }
 }
