@@ -66,6 +66,9 @@ namespace SkyrimMP::Server
         bool hasEquipmentState{};
         std::uint16_t actionFlags{};
         std::vector<std::uint32_t> equippedFormIds;
+        // Profile state is persisted with the character but is intentionally
+        // not serialized in the 250 ms Interest message.
+        PlayerAppearance appearance;
         std::int32_t exteriorRadiusCells{ 1 };
     };
 
