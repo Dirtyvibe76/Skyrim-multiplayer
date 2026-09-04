@@ -8,7 +8,7 @@
 
 namespace SkyrimMP::Server
 {
-    constexpr std::uint16_t kReplicationProtocolVersion = 8;
+    constexpr std::uint16_t kReplicationProtocolVersion = 9;
 
     enum class ReplicationMessageKind : std::uint8_t
     {
