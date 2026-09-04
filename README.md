@@ -96,6 +96,10 @@ SE/AE with SKSE64:
 - Deterministic `ServerQuestProgram` compilation for record-driven quests with
   ordered, deduplicated stage transitions; unsafe definitions remain excluded
   behind explicit adapter/unsupported classifications.
+- A tested party quest runtime with shared instances, validated stage
+  transitions, late-join projection, leave-time personal quest freezing, and
+  idempotent per-character reward records. Disk persistence and client quest
+  event/projection messages are the next integration layer.
 - Automated protocol, UDP loopback, session, duplicate-login, entity, and
   replication startup self-tests.
 
