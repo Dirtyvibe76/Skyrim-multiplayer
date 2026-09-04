@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <deque>
 #include <mutex>
+#include <unordered_set>
 #include <unordered_map>
 
 namespace SkyrimMP
@@ -13,6 +14,12 @@ namespace SkyrimMP
         // One client never renders its own authoritative player entity, so this
         // supports every remote participant on the server's default 64-player cap.
         constexpr std::size_t kMaxNativeProxies = 63;
+        // A PlayerCharacter ActorBase cannot safely be cloned into a live
+        // Skyrim cell.  Contact with the clone crashes both clients, even if
+        // its AI, collision, activation and gameplay mutations are disabled.
+        // Do not re-enable this until avatars are backed by a dedicated,
+        // server-described proxy representation rather than PlayerCharacter.
+        constexpr bool kNativePlayerActorProxyEnabled = false;
 
         enum class ProxyCommandKind : std::uint8_t
         {
@@ -42,6 +49,7 @@ namespace SkyrimMP
         std::deque<std::uint64_t> g_order;
         std::unordered_map<std::uint64_t, ProxyCommand> g_pending;
         std::unordered_map<std::uint64_t, NativeProxy> g_proxies;
+        std::unordered_set<std::uint64_t> g_suppressed;
 
         bool IsDynamicPlayerEntity(std::uint64_t id)
         {
@@ -181,6 +189,15 @@ namespace SkyrimMP
 
         bool SpawnProxy(std::uint64_t networkEntityId, const RemotePlayerProxyUpdate& update)
         {
+            if (!kNativePlayerActorProxyEnabled) {
+                if (g_suppressed.insert(networkEntityId).second) {
+                    logs::warn(
+                        "[REMOTE PLAYER PROXY SUPPRESSED] networkId={:016X} reason=unsafe PlayerCharacter clone disabled",
+                        networkEntityId);
+                }
+                return false;
+            }
+
             if (g_proxies.size() >= kMaxNativeProxies) {
                 logs::warn("[REMOTE PLAYER DROP] networkId={:016X} reason=controlled proxy limit limit={}", networkEntityId, kMaxNativeProxies);
                 return false;
@@ -342,6 +359,7 @@ namespace SkyrimMP
         std::scoped_lock lock(g_mutex);
         g_order.clear();
         g_pending.clear();
+        g_suppressed.clear();
         for (auto& [id, proxy] : g_proxies) DestroyProxy(id, proxy, "reset");
         g_proxies.clear();
         logs::info("[REMOTE PLAYER PROXY] reset maxNativeProxies={}", kMaxNativeProxies);
