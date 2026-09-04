@@ -8,6 +8,11 @@ namespace SkyrimMP
 {
     namespace
     {
+        bool MeaningfullyDifferent(float left, float right, float epsilon)
+        {
+            return std::abs(left - right) > epsilon;
+        }
+
         std::uint64_t CharacterId(const RE::PlayerCharacter& player)
         {
             if (const auto* saves = RE::BGSSaveLoadManager::GetSingleton(); saves && saves->currentCharacterID != 0) {
@@ -100,12 +105,14 @@ namespace SkyrimMP
             state.formId != previous.formId ||
             state.cellFormId != previous.cellFormId ||
             state.worldspaceFormId != previous.worldspaceFormId ||
-            state.position.x != previous.position.x ||
-            state.position.y != previous.position.y ||
-            state.position.z != previous.position.z ||
-            state.rotation.x != previous.rotation.x ||
-            state.rotation.y != previous.rotation.y ||
-            state.rotation.z != previous.rotation.z;
+            MeaningfullyDifferent(state.position.x, previous.position.x, 0.05f) ||
+            MeaningfullyDifferent(state.position.y, previous.position.y, 0.05f) ||
+            MeaningfullyDifferent(state.position.z, previous.position.z, 0.05f) ||
+            MeaningfullyDifferent(state.rotation.x, previous.rotation.x, 0.002f) ||
+            MeaningfullyDifferent(state.rotation.y, previous.rotation.y, 0.002f) ||
+            MeaningfullyDifferent(state.rotation.z, previous.rotation.z, 0.002f) ||
+            state.actionFlags != previous.actionFlags ||
+            state.equippedFormIds != previous.equippedFormIds;
 
         if (!changed) {
             return;

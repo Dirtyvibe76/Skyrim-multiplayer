@@ -59,6 +59,15 @@ namespace SkyrimMP::Server
             return ToGrid(entity.transform.x) == ToGrid(transform.x) && ToGrid(entity.transform.y) == ToGrid(transform.y);
         }
 
+        bool SameTransform(const WorldTransform& left, const WorldTransform& right)
+        {
+            constexpr float positionEpsilon = 0.05f;
+            constexpr float rotationEpsilon = 0.002f;
+            return std::abs(left.x - right.x) <= positionEpsilon && std::abs(left.y - right.y) <= positionEpsilon &&
+                std::abs(left.z - right.z) <= positionEpsilon && std::abs(left.pitch - right.pitch) <= rotationEpsilon &&
+                std::abs(left.yaw - right.yaw) <= rotationEpsilon && std::abs(left.roll - right.roll) <= rotationEpsilon;
+        }
+
         NetworkEntityId StaticNetworkId(const CanonicalRecordKey& key)
         {
             const std::uint64_t light = key.kind == FormNamespaceKind::Light ? 1ull : 0ull;
@@ -188,6 +197,10 @@ namespace SkyrimMP::Server
         const auto it = registry.entities.find(id);
         if (it == registry.entities.end()) return false;
         auto& entity = it->second;
+        const bool sameLocation = entity.location.exterior == location.exterior && entity.location.hasCell == location.hasCell &&
+            entity.location.hasWorldspace == location.hasWorldspace && entity.location.cell == location.cell &&
+            entity.location.worldspace == location.worldspace;
+        if (sameLocation && SameTransform(entity.transform, transform)) return true;
         const bool rebucket = !SameBucket(entity, transform, location);
         if (rebucket) RemoveFromBucket(registry, entity);
         entity.transform = transform;
