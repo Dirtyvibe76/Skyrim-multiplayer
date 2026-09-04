@@ -50,6 +50,16 @@ namespace SkyrimMP
         state.characterId = CharacterId(*player);
         state.formId = player->GetFormID();
 
+        if (auto* race = player->GetRace(); race != nullptr) {
+            if (auto* base = player->GetActorBase(); base != nullptr) {
+                state.appearance.raceFormId = race->GetFormID();
+                state.appearance.sex = static_cast<std::uint8_t>(base->GetSex());
+                state.appearance.weight = std::clamp(base->weight, 0.0f, 100.0f);
+                state.appearance.appearanceSeed = state.characterId;
+                state.appearance.valid = state.appearance.raceFormId != 0 && state.appearance.sex <= 1;
+            }
+        }
+
         const auto position = player->GetPosition();
         state.position = {
             position.x,
@@ -111,6 +121,9 @@ namespace SkyrimMP
             MeaningfullyDifferent(state.rotation.x, previous.rotation.x, 0.002f) ||
             MeaningfullyDifferent(state.rotation.y, previous.rotation.y, 0.002f) ||
             MeaningfullyDifferent(state.rotation.z, previous.rotation.z, 0.002f) ||
+            state.appearance.raceFormId != previous.appearance.raceFormId ||
+            state.appearance.sex != previous.appearance.sex ||
+            MeaningfullyDifferent(state.appearance.weight, previous.appearance.weight, 0.01f) ||
             state.actionFlags != previous.actionFlags ||
             state.equippedFormIds != previous.equippedFormIds;
 
@@ -120,8 +133,8 @@ namespace SkyrimMP
 
         logs::info(
             "[PLAYER] form={:08X} cell={:08X} world={:08X} "
-            "pos=({:.2f},{:.2f},{:.2f}) "
-            "rot=({:.3f},{:.3f},{:.3f})",
+            "pos=({:.2f},{:.2f},{:.2f}) rot=({:.3f},{:.3f},{:.3f}) "
+            "race={:08X} sex={} weight={:.1f} appearanceSeed={:016X}",
             state.formId,
             state.cellFormId,
             state.worldspaceFormId,
@@ -130,7 +143,11 @@ namespace SkyrimMP
             state.position.z,
             state.rotation.x,
             state.rotation.y,
-            state.rotation.z);
+            state.rotation.z,
+            state.appearance.raceFormId,
+            state.appearance.sex,
+            state.appearance.weight,
+            state.appearance.appearanceSeed);
 
         if (!firstSample) {
             if (state.cellFormId != previous.cellFormId) {
