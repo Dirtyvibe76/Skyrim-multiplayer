@@ -26,6 +26,15 @@ namespace SkyrimMP
         float z{};
     };
 
+    struct PlayerAppearance
+    {
+        std::uint32_t raceFormId{};
+        std::uint8_t sex{};
+        float weight{ 50.0f };
+        std::uint64_t appearanceSeed{};
+        bool valid{};
+    };
+
     struct PlayerState
     {
         std::uint64_t characterId{};
@@ -44,6 +53,7 @@ namespace SkyrimMP
         bool hasActorState{};
         bool hasStatusState{};
         bool hasEquipmentState{};
+        PlayerAppearance appearance;
         std::uint16_t actionFlags{};
         std::vector<std::uint32_t> equippedFormIds;
     };
