@@ -1,9 +1,6 @@
 #include "pch.h"
 
 #include "RemotePlayerProxyManager.h"
-#include "RemoteActorAdapter.h"
-#include "RemoteTransform.h"
-
 #include <algorithm>
 #include <deque>
 #include <mutex>
@@ -16,7 +13,6 @@ namespace SkyrimMP
         // One client never renders its own authoritative player entity, so this
         // supports every remote participant on the server's default 64-player cap.
         constexpr std::size_t kMaxNativeProxies = 63;
-        constexpr std::uint32_t kProxySequenceBase = 0x40000000u;
 
         enum class ProxyCommandKind : std::uint8_t
         {
@@ -50,11 +46,6 @@ namespace SkyrimMP
         bool IsDynamicPlayerEntity(std::uint64_t id)
         {
             return (id & (1ull << 63)) != 0;
-        }
-
-        std::uint32_t AdapterSequence(std::uint64_t revision)
-        {
-            return kProxySequenceBase | (static_cast<std::uint32_t>(revision) & 0x3FFFFFFFu);
         }
 
         void QueueLocked(ProxyCommand command)
@@ -115,6 +106,19 @@ namespace SkyrimMP
                 }
             }
             proxy.equippedFormIds = update.equippedFormIds;
+        }
+
+        void ApplyTransform(RE::Actor& actor, const RemotePlayerProxyUpdate& update)
+        {
+            // This code runs from the main-thread proxy queue and already owns a
+            // validated actor pointer.  Do not round-trip through TESForm lookup:
+            // newly placed dynamic refs are not reliably discoverable by form ID
+            // during their first frames.
+            actor.SetPosition(RE::NiPoint3{ update.position.x, update.position.y, update.position.z }, true);
+            actor.data.angle.x = update.rotation.x;
+            actor.data.angle.y = update.rotation.y;
+            actor.data.angle.z = update.rotation.z;
+            actor.Update3DPosition(true);
         }
 
         void ApplyActions(RE::Actor& actor, NativeProxy& proxy, const RemotePlayerProxyUpdate& update)
@@ -216,7 +220,7 @@ namespace SkyrimMP
             actor->SetActivationBlocked(true);
             actor->SetCollision(false);
             actor->EnableAI(false);
-            RemoteActorAdapter::Enqueue(RemoteTransform{ actor->GetFormID(), AdapterSequence(update.revision), update.position, update.rotation });
+            ApplyTransform(*actor, update);
             ApplyActorState(*actor, update);
             ApplyEquipment(*actor, proxyIt->second, update);
             ApplyActions(*actor, proxyIt->second, update);
@@ -272,12 +276,7 @@ namespace SkyrimMP
             ApplyActorState(*actor, update);
             ApplyEquipment(*actor, proxy, update);
             ApplyActions(*actor, proxy, update);
-            RemoteActorAdapter::Enqueue(RemoteTransform{
-                actor->GetFormID(),
-                AdapterSequence(update.revision),
-                update.position,
-                update.rotation
-            });
+            ApplyTransform(*actor, update);
         }
     }
 
@@ -343,6 +342,6 @@ namespace SkyrimMP
         g_pending.clear();
         for (auto& [id, proxy] : g_proxies) DestroyProxy(id, proxy, "reset");
         g_proxies.clear();
-        logs::info("[REMOTE PLAYER PROXY] reset maxNativeProxies={} adapterSequenceBase=0x{:08X}", kMaxNativeProxies, kProxySequenceBase);
+        logs::info("[REMOTE PLAYER PROXY] reset maxNativeProxies={}", kMaxNativeProxies);
     }
 }
