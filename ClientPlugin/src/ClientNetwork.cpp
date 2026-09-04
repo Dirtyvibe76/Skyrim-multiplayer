@@ -9,10 +9,12 @@
 #include <bit>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -27,11 +29,13 @@ namespace SkyrimMP
 
         constexpr std::uint32_t kWireMagic = 0x31504D53u;
         constexpr std::uint16_t kWireProtocolVersion = 2;
-        constexpr std::uint16_t kReplicationProtocolVersion = 8;
+        constexpr std::uint16_t kReplicationProtocolVersion = 9;
         constexpr std::uint16_t kServerPort = 10578;
         constexpr auto kLoadOrderRevision = "7dc35a831945468b790a6b3398236c0fe9fe7c8b32425be9ef07ca1434d6c808";
         constexpr std::size_t kMaxDatagram = 1200;
         constexpr std::uint8_t kRuntimeEntityKindPlayer = 2;
+        constexpr std::size_t kMaxAppearanceName = 63;
+        constexpr std::size_t kMaxAppearanceHeadParts = 32;
 
         enum class PacketKind : std::uint8_t { Data = 1, Ack = 2, Control = 3 };
         enum class Channel : std::uint8_t { Unreliable = 0, Reliable = 1 };
@@ -44,7 +48,8 @@ namespace SkyrimMP
             Disconnect = 5,
             Interest = 6,
             BootstrapRequest = 7,
-            WorldBootstrap = 8
+            WorldBootstrap = 8,
+            AppearanceProfile = 9
         };
         enum class ReplicationKind : std::uint8_t { Spawn = 0, Delta = 1, Despawn = 2 };
 
@@ -136,6 +141,13 @@ namespace SkyrimMP
             Append(out, std::bit_cast<std::uint32_t>(value));
         }
 
+        void AppendString8(std::vector<std::uint8_t>& out, const std::string& value)
+        {
+            if (value.size() > kMaxAppearanceName) throw std::runtime_error("appearance name exceeds client limit");
+            Append(out, static_cast<std::uint8_t>(value.size()));
+            out.insert(out.end(), value.begin(), value.end());
+        }
+
         template <class T>
         T Read(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
         {
@@ -149,6 +161,16 @@ namespace SkyrimMP
         float ReadFloat(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
         {
             return std::bit_cast<float>(Read<std::uint32_t>(bytes, offset));
+        }
+
+        std::string ReadString8(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
+        {
+            const auto length = Read<std::uint8_t>(bytes, offset);
+            if (length > kMaxAppearanceName || offset + length > bytes.size()) throw std::runtime_error("appearance name invalid");
+            std::string value(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                bytes.begin() + static_cast<std::ptrdiff_t>(offset + length));
+            offset += length;
+            return value;
         }
 
         CanonicalKey ReadKey(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
@@ -166,8 +188,13 @@ namespace SkyrimMP
         {
             if (formId == 0) return false;
             const auto high = static_cast<std::uint8_t>(formId >> 24);
-            if (high == 0xFE || high == 0xFF) return false;
-            if (high > 4) return false;
+            if (high == 0xFF) return false;
+            if (high == 0xFE) {
+                out.light = true;
+                out.namespaceIndex = (formId >> 12) & 0x0FFFu;
+                out.localId = formId & 0x0FFFu;
+                return true;
+            }
             out.light = false;
             out.namespaceIndex = high;
             out.localId = formId & 0x00FFFFFFu;
@@ -176,7 +203,11 @@ namespace SkyrimMP
 
         std::uint32_t CanonicalToRuntimeForm(const CanonicalKey& key)
         {
-            if (key.light || key.namespaceIndex > 4 || key.localId > 0x00FFFFFFu) return 0;
+            if (key.light) {
+                if (key.namespaceIndex > 0x0FFFu || key.localId > 0x0FFFu) return 0;
+                return 0xFE000000u | (key.namespaceIndex << 12) | key.localId;
+            }
+            if (key.namespaceIndex > 0xFDu || key.localId > 0x00FFFFFFu) return 0;
             return (key.namespaceIndex << 24) | key.localId;
         }
 
@@ -227,6 +258,63 @@ namespace SkyrimMP
             return out;
         }
 
+        bool ValidAppearance(const PlayerAppearance& appearance)
+        {
+            if (!appearance.valid || appearance.revision == 0 || appearance.displayName.size() > kMaxAppearanceName ||
+                appearance.raceFormId == 0 || appearance.sex > 1 || !std::isfinite(appearance.weight) ||
+                appearance.weight < 0.0f || appearance.weight > 100.0f ||
+                appearance.headPartFormIds.size() > kMaxAppearanceHeadParts) {
+                return false;
+            }
+            for (const auto morph : appearance.faceMorphs) {
+                if (!std::isfinite(morph) || std::abs(morph) > 100.0f) return false;
+            }
+            return true;
+        }
+
+        std::vector<std::uint8_t> EncodeAppearanceProfile(std::uint64_t sessionId, const PlayerAppearance& appearance)
+        {
+            if (!ValidAppearance(appearance)) throw std::runtime_error("local appearance profile invalid");
+            std::vector<std::uint8_t> out;
+            Append(out, static_cast<std::uint8_t>(ControlKind::AppearanceProfile));
+            Append(out, sessionId);
+            Append(out, appearance.revision);
+            AppendString8(out, appearance.displayName);
+            Append(out, appearance.raceFormId);
+            Append(out, appearance.sex);
+            AppendFloat(out, appearance.weight);
+            Append(out, appearance.hairColorFormId);
+            Append(out, appearance.faceDetailsFormId);
+            Append(out, appearance.bodyTintColor);
+            Append(out, static_cast<std::uint8_t>(appearance.headPartFormIds.size()));
+            for (const auto formId : appearance.headPartFormIds) Append(out, formId);
+            for (const auto morph : appearance.faceMorphs) AppendFloat(out, morph);
+            for (const auto part : appearance.faceParts) Append(out, part);
+            return out;
+        }
+
+        PlayerAppearance DecodeAppearanceProfile(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
+        {
+            PlayerAppearance appearance;
+            appearance.valid = true;
+            appearance.revision = Read<std::uint64_t>(bytes, offset);
+            appearance.displayName = ReadString8(bytes, offset);
+            appearance.raceFormId = Read<std::uint32_t>(bytes, offset);
+            appearance.sex = Read<std::uint8_t>(bytes, offset);
+            appearance.weight = ReadFloat(bytes, offset);
+            appearance.hairColorFormId = Read<std::uint32_t>(bytes, offset);
+            appearance.faceDetailsFormId = Read<std::uint32_t>(bytes, offset);
+            appearance.bodyTintColor = Read<std::uint32_t>(bytes, offset);
+            const auto headPartCount = Read<std::uint8_t>(bytes, offset);
+            if (headPartCount > kMaxAppearanceHeadParts) throw std::runtime_error("appearance head-part count invalid");
+            appearance.headPartFormIds.reserve(headPartCount);
+            for (std::uint8_t i = 0; i < headPartCount; ++i) appearance.headPartFormIds.push_back(Read<std::uint32_t>(bytes, offset));
+            for (auto& morph : appearance.faceMorphs) morph = ReadFloat(bytes, offset);
+            for (auto& part : appearance.faceParts) part = Read<std::int32_t>(bytes, offset);
+            if (!ValidAppearance(appearance)) throw std::runtime_error("received appearance profile invalid");
+            return appearance;
+        }
+
         std::optional<std::vector<std::uint8_t>> EncodePlayerState(
             ControlKind kind,
             std::uint64_t sessionId,
@@ -265,6 +353,7 @@ namespace SkyrimMP
             Append(out, actorFlags);
             if ((player.actionFlags & ~kKnownPlayerActionFlags) != 0) return std::nullopt;
             Append(out, player.actionFlags);
+            if (player.equippedFormIds.size() > 32) return std::nullopt;
             Append(out, static_cast<std::uint8_t>(player.equippedFormIds.size()));
             for (const auto formId : player.equippedFormIds) Append(out, formId);
             Append(out, static_cast<std::int32_t>(1));
@@ -520,7 +609,9 @@ namespace SkyrimMP
             auto lastHeartbeat = std::chrono::steady_clock::time_point{};
             auto lastBootstrapRequest = std::chrono::steady_clock::time_point{};
             auto lastInterest = std::chrono::steady_clock::time_point{};
+            auto lastAppearanceSend = std::chrono::steady_clock::time_point{};
             auto lastServerPacket = std::chrono::steady_clock::time_point{};
+            std::uint64_t lastAppearanceSentRevision = 0;
             std::uint64_t dataPackets = 0;
             std::uint64_t replicationMessages = 0;
             std::uint64_t spawns = 0;
@@ -531,9 +622,7 @@ namespace SkyrimMP
 
             auto resetSession = [&](const char* reason) {
                 for (const auto& [id, replica] : replicas) {
-                    if (replica.entityKind == kRuntimeEntityKindPlayer) {
-                        RemotePlayerProxyManager::EnqueueDespawn(id);
-                    }
+                    if (replica.entityKind == kRuntimeEntityKindPlayer) RemotePlayerProxyManager::EnqueueDespawn(id);
                 }
                 replicas.clear();
                 playerTombstones.clear();
@@ -543,13 +632,20 @@ namespace SkyrimMP
                 lastHeartbeat = {};
                 lastBootstrapRequest = {};
                 lastInterest = {};
+                lastAppearanceSend = {};
+                lastAppearanceSentRevision = 0;
                 lastServerPacket = {};
                 g_authenticated.store(false, std::memory_order_release);
                 WorldBootstrapManager::Reset();
                 logs::warn("[NET-CLIENT] session reset reason={}; reconnecting", reason);
             };
 
-            logs::info("[NET-CLIENT] worker started server={}:{} protocol={} revision={} waitingForLoadedCharacter=true worldBootstrap=server remotePlayerProxies=63 tombstones=true", target.address, target.port, kReplicationProtocolVersion, kLoadOrderRevision);
+            logs::info(
+                "[NET-CLIENT] worker started server={}:{} protocol={} revision={} waitingForLoadedCharacter=true worldBootstrap=server remotePlayerProxies=63 tombstones=true appearanceProfiles=true",
+                target.address,
+                target.port,
+                kReplicationProtocolVersion,
+                kLoadOrderRevision);
 
             while (!stop.stop_requested() && g_running.load(std::memory_order_relaxed)) {
                 const auto now = std::chrono::steady_clock::now();
@@ -557,8 +653,7 @@ namespace SkyrimMP
                     std::scoped_lock lock(g_playerMutex);
                     if (g_hasPlayer) nonce = g_player.characterId;
                 }
-                if (sessionId != 0 && lastServerPacket.time_since_epoch().count() != 0 &&
-                    now - lastServerPacket >= 10s) {
+                if (sessionId != 0 && lastServerPacket.time_since_epoch().count() != 0 && now - lastServerPacket >= 10s) {
                     resetSession("server timeout");
                 }
 
@@ -573,17 +668,37 @@ namespace SkyrimMP
                         lastHeartbeat = now;
                     }
 
+                    PlayerState sampledPlayer{};
+                    bool hasSampledPlayer = false;
+                    {
+                        std::scoped_lock lock(g_playerMutex);
+                        sampledPlayer = g_player;
+                        hasSampledPlayer = g_hasPlayer;
+                    }
+
+                    if (hasSampledPlayer && ValidAppearance(sampledPlayer.appearance) &&
+                        (sampledPlayer.appearance.revision != lastAppearanceSentRevision ||
+                         lastAppearanceSend.time_since_epoch().count() == 0 || now - lastAppearanceSend >= 10s)) {
+                        const auto profile = EncodeAppearanceProfile(sessionId, sampledPlayer.appearance);
+                        SendDatagram(socketValue, server, MakePacket(PacketKind::Control, Channel::Reliable, nextSequence++, 0, profile));
+                        if (sampledPlayer.appearance.revision != lastAppearanceSentRevision) {
+                            logs::info(
+                                "[APPEARANCE-SEND] revision={:016X} name={} race={:08X} sex={} weight={:.3f} headParts={}",
+                                sampledPlayer.appearance.revision,
+                                sampledPlayer.appearance.displayName,
+                                sampledPlayer.appearance.raceFormId,
+                                sampledPlayer.appearance.sex,
+                                sampledPlayer.appearance.weight,
+                                sampledPlayer.appearance.headPartFormIds.size());
+                        }
+                        lastAppearanceSentRevision = sampledPlayer.appearance.revision;
+                        lastAppearanceSend = now;
+                    }
+
                     if (!bootstrapReceived) {
                         if (lastBootstrapRequest.time_since_epoch().count() == 0 || now - lastBootstrapRequest >= 1s) {
-                            PlayerState player{};
-                            bool hasPlayer = false;
-                            {
-                                std::scoped_lock lock(g_playerMutex);
-                                player = g_player;
-                                hasPlayer = g_hasPlayer;
-                            }
-                            if (hasPlayer) {
-                                if (auto payload = EncodeBootstrapRequest(sessionId, player)) {
+                            if (hasSampledPlayer) {
+                                if (auto payload = EncodeBootstrapRequest(sessionId, sampledPlayer)) {
                                     SendDatagram(socketValue, server, MakePacket(PacketKind::Control, Channel::Reliable, nextSequence++, 0, *payload));
                                 }
                             }
@@ -591,15 +706,8 @@ namespace SkyrimMP
                         }
                     } else if (WorldBootstrapManager::HasApplied() &&
                                (lastInterest.time_since_epoch().count() == 0 || now - lastInterest >= 250ms)) {
-                        PlayerState player{};
-                        bool hasPlayer = false;
-                        {
-                            std::scoped_lock lock(g_playerMutex);
-                            player = g_player;
-                            hasPlayer = g_hasPlayer;
-                        }
-                        if (hasPlayer) {
-                            if (auto payload = EncodeInterest(sessionId, player)) {
+                        if (hasSampledPlayer) {
+                            if (auto payload = EncodeInterest(sessionId, sampledPlayer)) {
                                 SendDatagram(socketValue, server, MakePacket(PacketKind::Control, Channel::Reliable, nextSequence++, 0, *payload));
                             }
                         }
@@ -655,6 +763,23 @@ namespace SkyrimMP
                                 if (sessionId == 0) throw std::runtime_error("world bootstrap before welcome");
                                 DecodeWorldBootstrap(bytes, offset, sessionId, bootstrapReceived);
                                 if (offset != bytes.size()) throw std::runtime_error("world bootstrap trailing bytes");
+                            } else if (controlKind == ControlKind::AppearanceProfile) {
+                                if (sessionId == 0) throw std::runtime_error("appearance profile before welcome");
+                                const auto profileSession = Read<std::uint64_t>(bytes, offset);
+                                if (profileSession != sessionId) throw std::runtime_error("appearance profile session mismatch");
+                                const auto networkEntityId = Read<std::uint64_t>(bytes, offset);
+                                if ((networkEntityId & (1ull << 63)) == 0) throw std::runtime_error("appearance profile entity is not dynamic");
+                                auto appearance = DecodeAppearanceProfile(bytes, offset);
+                                if (offset != bytes.size()) throw std::runtime_error("appearance profile trailing bytes");
+                                logs::info(
+                                    "[APPEARANCE-RECEIVE] networkId={:016X} revision={:016X} name={} race={:08X} sex={} headParts={}",
+                                    networkEntityId,
+                                    appearance.revision,
+                                    appearance.displayName,
+                                    appearance.raceFormId,
+                                    appearance.sex,
+                                    appearance.headPartFormIds.size());
+                                RemotePlayerProxyManager::EnqueueAppearance(networkEntityId, appearance);
                             } else if (controlKind == ControlKind::Reject) {
                                 const auto reason = Read<std::uint8_t>(bytes, offset);
                                 const char* description = "unknown";
@@ -669,6 +794,8 @@ namespace SkyrimMP
                                 }
                                 logs::error("[NET-CLIENT] server rejected connection reason={} ({})", reason, description);
                                 if (reason == 4) resetSession("server rejected stale session");
+                            } else {
+                                throw std::runtime_error("unexpected control kind");
                             }
                         } else if (kind == PacketKind::Data) {
                             if (controlSize != 0) throw std::runtime_error("data packet has control payload");
@@ -679,7 +806,14 @@ namespace SkyrimMP
                             if ((dataPackets % 25) == 1) {
                                 logs::info(
                                     "[NET-CLIENT] replication packets={} messages={} active={} spawn={} delta={} despawn={} latestPacketMessages={} playerTombstones={}",
-                                    dataPackets, replicationMessages, replicas.size(), spawns, deltas, despawns, messageCount, playerTombstones.size());
+                                    dataPackets,
+                                    replicationMessages,
+                                    replicas.size(),
+                                    spawns,
+                                    deltas,
+                                    despawns,
+                                    messageCount,
+                                    playerTombstones.size());
                             }
                         } else if (kind == PacketKind::Ack) {
                             if (messageCount != 0 || controlSize != 0 || offset != bytes.size()) throw std::runtime_error("bad ACK packet");
@@ -702,8 +836,16 @@ namespace SkyrimMP
             closesocket(socketValue);
             WSACleanup();
             logs::info(
-                "[NET-CLIENT] worker stopped packets={} messages={} active={} spawn={} delta={} despawn={} playerTombstones={} bootstrap={}",
-                dataPackets, replicationMessages, replicas.size(), spawns, deltas, despawns, playerTombstones.size(), bootstrapReceived);
+                "[NET-CLIENT] worker stopped packets={} messages={} active={} spawn={} delta={} despawn={} playerTombstones={} bootstrap={} appearanceRevision={:016X}",
+                dataPackets,
+                replicationMessages,
+                replicas.size(),
+                spawns,
+                deltas,
+                despawns,
+                playerTombstones.size(),
+                bootstrapReceived,
+                lastAppearanceSentRevision);
         }
     }
 
