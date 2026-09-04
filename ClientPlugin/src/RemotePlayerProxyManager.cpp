@@ -34,6 +34,7 @@ namespace SkyrimMP
         struct NativeProxy
         {
             RE::ObjectRefHandle handle;
+            bool initialized{};
             std::uint64_t lastRevision{};
             std::uint32_t cellFormId{};
             std::uint32_t worldspaceFormId{};
@@ -141,7 +142,7 @@ namespace SkyrimMP
 
         void DestroyProxy(std::uint64_t networkEntityId, NativeProxy& proxy, const char* reason)
         {
-            if (auto* actor = ResolveActor(proxy)) {
+            if (auto* actor = ResolveActor(proxy); actor && actor->Get3D()) {
                 actor->EnableAI(false);
                 actor->SetCollision(false);
                 actor->Disable();
@@ -183,11 +184,6 @@ namespace SkyrimMP
                 return false;
             }
 
-            actor->SetTemporary();
-            actor->SetActivationBlocked(true);
-            actor->SetCollision(false);
-            actor->EnableAI(false);
-
             NativeProxy proxy;
             proxy.handle = actor->GetHandle();
             proxy.lastRevision = update.revision;
@@ -206,12 +202,21 @@ namespace SkyrimMP
                 g_proxies.size(),
                 kMaxNativeProxies);
 
-            RemoteActorAdapter::Enqueue(RemoteTransform{
-                actor->GetFormID(),
-                AdapterSequence(update.revision),
-                update.position,
-                update.rotation
-            });
+            // PlaceObjectAtMe returns before the actor's 3D can exist.  Calling
+            // inventory, animation, or actor-value APIs in that window caused a
+            // two-client crash.  Keep the handle and initialize on a later
+            // game-thread update only after Skyrim reports a loaded 3D.
+            if (!actor->Get3D()) {
+                logs::info("[REMOTE PLAYER PROXY PENDING] networkId={:016X} form={:08X} reason=waiting-for-3D",
+                    networkEntityId, actor->GetFormID());
+                return true;
+            }
+            proxyIt->second.initialized = true;
+            actor->SetTemporary();
+            actor->SetActivationBlocked(true);
+            actor->SetCollision(false);
+            actor->EnableAI(false);
+            RemoteActorAdapter::Enqueue(RemoteTransform{ actor->GetFormID(), AdapterSequence(update.revision), update.position, update.rotation });
             ApplyActorState(*actor, update);
             ApplyEquipment(*actor, proxyIt->second, update);
             ApplyActions(*actor, proxyIt->second, update);
@@ -248,10 +253,19 @@ namespace SkyrimMP
 
             auto* actor = ResolveActor(proxy);
             if (!actor || !actor->Get3D()) {
-                DestroyProxy(update.networkEntityId, proxy, "actor unavailable");
-                g_proxies.erase(proxyIt);
-                SpawnProxy(update.networkEntityId, update);
+                // Streaming has not completed.  Never churn the native ref or
+                // invoke actor APIs until it is ready.
+                logs::debug("[REMOTE PLAYER PROXY WAIT] networkId={:016X} revision={} reason=actor-3D-unavailable",
+                    update.networkEntityId, update.revision);
                 return;
+            }
+
+            if (!proxy.initialized) {
+                proxy.initialized = true;
+                actor->SetTemporary();
+                actor->SetActivationBlocked(true);
+                actor->SetCollision(false);
+                actor->EnableAI(false);
             }
 
             proxy.lastRevision = update.revision;
