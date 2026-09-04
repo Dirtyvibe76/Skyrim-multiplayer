@@ -4,8 +4,10 @@
 #include "RemotePlayerProxyManager.h"
 #include "WorldBootstrapManager.h"
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
@@ -88,6 +90,18 @@ namespace SkyrimMP
             std::uint16_t port{ kServerPort };
         };
 
+        std::string Trim(std::string value)
+        {
+            const auto isSpace = [](unsigned char character) { return std::isspace(character) != 0; };
+            value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](char character) {
+                return !isSpace(static_cast<unsigned char>(character));
+            }));
+            value.erase(std::find_if(value.rbegin(), value.rend(), [&](char character) {
+                return !isSpace(static_cast<unsigned char>(character));
+            }).base(), value.end());
+            return value;
+        }
+
         ServerTarget ReadServerTarget()
         {
             ServerTarget target;
@@ -96,8 +110,8 @@ namespace SkyrimMP
             while (std::getline(input, line)) {
                 const auto equals = line.find('=');
                 if (equals == std::string::npos) continue;
-                const auto key = line.substr(0, equals);
-                const auto value = line.substr(equals + 1);
+                const auto key = Trim(line.substr(0, equals));
+                const auto value = Trim(line.substr(equals + 1));
                 if (key == "Address" && !value.empty()) target.address = value;
                 if (key == "Port") {
                     try {
