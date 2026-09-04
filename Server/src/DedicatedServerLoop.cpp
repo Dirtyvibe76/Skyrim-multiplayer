@@ -1,6 +1,7 @@
 #include "DedicatedServerLoop.h"
 #include "NetworkTransport.h"
 #include "SessionProtocol.h"
+#include "PartyQuestManager.h"
 
 #include <windows.h>
 
@@ -43,6 +44,9 @@ namespace SkyrimMP::Server
         NetworkTransport transport;
         transport.Bind(port);
         ServerSessionManager sessions(loadOrderRevision, maxPlayers, "server-data/first-logins.txt");
+        if (!registry.questPrograms) throw std::runtime_error("live server loop requires compiled quest programs");
+        PartyQuestManager partyQuests(*registry.questPrograms);
+        partyQuests.Load("server-data/party-quests.state");
 
         g_stopRequested.store(false, std::memory_order_relaxed);
         SetConsoleCtrlHandler(ConsoleHandler, TRUE);
@@ -108,6 +112,7 @@ namespace SkyrimMP::Server
 
         SetConsoleCtrlHandler(ConsoleHandler, FALSE);
         sessions.FlushAuthoritativePlayers(registry);
+        partyQuests.Save("server-data/party-quests.state");
         std::cout << "[LIVE-STOP] ticks=" << ticks
                   << " sessions=" << sessions.SessionCount()
                   << " players=" << sessions.ActivePlayerCount()

@@ -3,6 +3,7 @@
 #include "ServerQuestProgram.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <optional>
 #include <set>
@@ -56,6 +57,8 @@ namespace SkyrimMP::Server
 
         const PartyState* FindParty(PartyId a_party) const;
         const FrozenPersonalQuest* FindFrozenQuest(CharacterId a_character, const std::string& a_questKey) const;
+        void Save(const std::filesystem::path& a_path) const;
+        void Load(const std::filesystem::path& a_path);
 
     private:
         const ServerQuestProgramDatabase* programs_{};
