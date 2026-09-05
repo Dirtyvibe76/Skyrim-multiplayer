@@ -19,6 +19,7 @@ namespace SkyrimMP::Server
     namespace
     {
         constexpr std::size_t kMaxAppearanceName = 63;
+        constexpr std::size_t kMaxLoadOrderRevision = 128;
         constexpr std::size_t kMaxAppearanceHeadParts = 32;
 
         std::string EndpointText(const NetworkEndpoint& endpoint)
@@ -71,10 +72,13 @@ namespace SkyrimMP::Server
             return std::bit_cast<float>(ReadIntegral<std::uint32_t>(bytes, offset));
         }
 
-        std::string ReadString8(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
+        std::string ReadString8(
+            const std::vector<std::uint8_t>& bytes,
+            std::size_t& offset,
+            std::size_t maxLength)
         {
             const auto length = ReadIntegral<std::uint8_t>(bytes, offset);
-            if (length > kMaxAppearanceName || offset + length > bytes.size()) {
+            if (length > maxLength || offset + length > bytes.size()) {
                 throw std::runtime_error("authoritative session string invalid");
             }
             std::string value(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
@@ -149,7 +153,7 @@ namespace SkyrimMP::Server
             PlayerAppearance appearance;
             appearance.valid = true;
             appearance.revision = ReadIntegral<std::uint64_t>(bytes, offset);
-            appearance.displayName = ReadString8(bytes, offset);
+            appearance.displayName = ReadString8(bytes, offset, kMaxAppearanceName);
             appearance.raceFormId = ReadIntegral<std::uint32_t>(bytes, offset);
             appearance.sex = ReadIntegral<std::uint8_t>(bytes, offset);
             appearance.weight = ReadFloat(bytes, offset);
@@ -536,7 +540,7 @@ namespace SkyrimMP::Server
                 if (kind == SessionControlKind::Hello) {
                     ++stats_.hellos;
                     const auto protocol = ReadIntegral<std::uint16_t>(incoming.payload, offset);
-                    const auto revision = ReadString8(incoming.payload, offset);
+                    const auto revision = ReadString8(incoming.payload, offset, kMaxLoadOrderRevision);
                     const auto nonce = ReadIntegral<std::uint64_t>(incoming.payload, offset);
                     EnsureConsumed(incoming.payload, offset);
 

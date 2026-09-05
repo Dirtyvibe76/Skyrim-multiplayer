@@ -14,6 +14,9 @@ namespace
     bool g_networkStarted = false;
     bool g_gameplayEventProbeInstalled = false;
     bool g_createBootstrapRequested = false;
+    bool g_menuEventSinkInstalled = false;
+
+    void StartMultiplayerNetwork();
 
     bool RunSystemCommand(std::string_view command)
     {
@@ -26,6 +29,56 @@ namespace
         script->ClearCommand();
         return true;
     }
+
+    class MainMenuOpenSink final : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
+    {
+    public:
+        static MainMenuOpenSink* GetSingleton()
+        {
+            static MainMenuOpenSink singleton;
+            return std::addressof(singleton);
+        }
+
+        RE::BSEventNotifyControl ProcessEvent(
+            const RE::MenuOpenCloseEvent* a_event,
+            RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
+        {
+            if (!a_event || !a_event->opening || a_event->menuName != RE::MainMenu::MENU_NAME) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
+            const auto& launch = SkyrimMP::GetMultiplayerLaunchConfig();
+            if (!launch.createCharacter || launch.characterId == 0 || g_createBootstrapRequested) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
+            auto* tasks = SKSE::GetTaskInterface();
+            if (!tasks) {
+                logs::error("[MP CHARACTER BOOTSTRAP] SKSE task interface unavailable at main menu");
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
+            g_createBootstrapRequested = true;
+            const auto characterId = launch.characterId;
+            logs::info(
+                "[MP CHARACTER BOOTSTRAP] main menu ready; queueing Riverwood creation character={:016X}",
+                characterId);
+            tasks->AddTask([characterId]() {
+                if (RunSystemCommand("coc Riverwood")) {
+                    logs::info(
+                        "[MP CHARACTER BOOTSTRAP] requested new multiplayer-only player in Riverwood character={:016X}",
+                        characterId);
+                    StartMultiplayerNetwork();
+                    logs::info("[MP CHARACTER BOOTSTRAP] Riverwood multiplayer client worker started");
+                } else {
+                    g_createBootstrapRequested = false;
+                    logs::error("[MP CHARACTER BOOTSTRAP] failed to dispatch coc Riverwood");
+                }
+            });
+
+            return RE::BSEventNotifyControl::kContinue;
+        }
+    };
 
     void StartMultiplayerNetwork()
     {
@@ -58,13 +111,13 @@ namespace
                 g_gameplayEventProbeInstalled = SkyrimMP::GameplayEventProbe::Install();
             }
 
-            if (const auto& launch = SkyrimMP::GetMultiplayerLaunchConfig();
-                launch.createCharacter && launch.characterId != 0 && !g_createBootstrapRequested) {
-                g_createBootstrapRequested = true;
-                if (RunSystemCommand("coc Riverwood")) {
-                    logs::info("[MP CHARACTER BOOTSTRAP] requested new multiplayer-only player in Riverwood character={:016X}", launch.characterId);
+            if (!g_menuEventSinkInstalled) {
+                if (auto* ui = RE::UI::GetSingleton()) {
+                    ui->AddEventSink<RE::MenuOpenCloseEvent>(MainMenuOpenSink::GetSingleton());
+                    g_menuEventSinkInstalled = true;
+                    logs::info("[MP CHARACTER BOOTSTRAP] main-menu readiness sink installed");
                 } else {
-                    logs::error("[MP CHARACTER BOOTSTRAP] failed to dispatch coc Riverwood");
+                    logs::error("[MP CHARACTER BOOTSTRAP] UI unavailable; main-menu readiness sink not installed");
                 }
             }
 
