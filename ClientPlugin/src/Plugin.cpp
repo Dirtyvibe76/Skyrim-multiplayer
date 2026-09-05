@@ -5,6 +5,7 @@
 #include "MainThreadHook.h"
 #include "MultiplayerLaunchConfig.h"
 #include "ObjectLoadProbe.h"
+#include "WorldBootstrapManager.h"
 #include "BuildInfo.h"
 
 namespace
@@ -14,6 +15,7 @@ namespace
     bool g_networkStarted = false;
     bool g_gameplayEventProbeInstalled = false;
     bool g_createBootstrapRequested = false;
+    bool g_joinSaveLoadRequested = false;
     bool g_menuEventSinkInstalled = false;
 
     void StartMultiplayerNetwork();
@@ -43,11 +45,41 @@ namespace
             const RE::MenuOpenCloseEvent* a_event,
             RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override
         {
-            if (!a_event || !a_event->opening || a_event->menuName != RE::MainMenu::MENU_NAME) {
+            if (!a_event) {
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
+            if (a_event->menuName == RE::RaceSexMenu::MENU_NAME) {
+                SkyrimMP::WorldBootstrapManager::NotifyCharacterCreatorMenuEvent(a_event->opening);
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
+            if (!a_event->opening || a_event->menuName != RE::MainMenu::MENU_NAME) {
                 return RE::BSEventNotifyControl::kContinue;
             }
 
             const auto& launch = SkyrimMP::GetMultiplayerLaunchConfig();
+            if (!launch.createCharacter && launch.characterId != 0 && !launch.saveName.empty() && !g_joinSaveLoadRequested) {
+                auto* tasks = SKSE::GetTaskInterface();
+                if (!tasks) {
+                    logs::error("[MP JOIN LOAD] SKSE task interface unavailable at main menu");
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+
+                g_joinSaveLoadRequested = true;
+                const auto saveName = launch.saveName;
+                logs::info("[MP JOIN LOAD] main menu ready; queueing multiplayer save={}", saveName);
+                tasks->AddTask([saveName]() {
+                    if (RunSystemCommand(std::format("load {}", saveName))) {
+                        logs::info("[MP JOIN LOAD] requested multiplayer save={}", saveName);
+                    } else {
+                        g_joinSaveLoadRequested = false;
+                        logs::error("[MP JOIN LOAD] failed to dispatch multiplayer save={}", saveName);
+                    }
+                });
+                return RE::BSEventNotifyControl::kContinue;
+            }
+
             if (!launch.createCharacter || launch.characterId == 0 || g_createBootstrapRequested) {
                 return RE::BSEventNotifyControl::kContinue;
             }

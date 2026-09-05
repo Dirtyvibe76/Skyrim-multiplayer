@@ -19,9 +19,29 @@ namespace SkyrimMP
         std::uint64_t g_appliedPlayerEntityId{};
         bool g_characterCreatorRequested{};
         bool g_characterCreatorObservedOpen{};
+        bool g_characterCreatorClosed{};
         std::uint32_t g_characterCreatorAttempts{};
         std::chrono::steady_clock::time_point g_lastCharacterCreatorRequest{};
         std::chrono::steady_clock::time_point g_worldContextReadyAt{};
+        std::string g_characterCreatorBaselineName;
+        std::uint32_t g_characterCreatorBaselineRace{};
+        float g_characterCreatorBaselineWeight{};
+
+        void CaptureCharacterCreatorBaseline(RE::PlayerCharacter& player)
+        {
+            g_characterCreatorBaselineName = player.GetName() ? player.GetName() : "";
+            if (auto* race = player.GetRace()) g_characterCreatorBaselineRace = race->GetFormID();
+            if (auto* base = player.GetActorBase()) g_characterCreatorBaselineWeight = base->GetWeight();
+        }
+
+        bool CharacterCreatorProfileChanged(RE::PlayerCharacter& player)
+        {
+            const auto name = player.GetName() ? std::string(player.GetName()) : std::string{};
+            const auto race = player.GetRace() ? player.GetRace()->GetFormID() : 0;
+            const auto weight = player.GetActorBase() ? player.GetActorBase()->GetWeight() : 0.0f;
+            return name != g_characterCreatorBaselineName || race != g_characterCreatorBaselineRace ||
+                std::abs(weight - g_characterCreatorBaselineWeight) > 0.01f;
+        }
 
         bool ContextMatches(const ServerWorldBootstrap& bootstrap, RE::PlayerCharacter* player)
         {
@@ -68,6 +88,7 @@ namespace SkyrimMP
 
             if (!g_characterCreatorRequested) {
                 if (!RunShowRaceMenu(player)) return false;
+                CaptureCharacterCreatorBaseline(player);
                 g_characterCreatorRequested = true;
                 g_characterCreatorAttempts = 1;
                 g_lastCharacterCreatorRequest = now;
@@ -94,13 +115,40 @@ namespace SkyrimMP
                         logs::warn("[MP CHARACTER CREATE RETRY] attempt={} RaceSex Menu not observed open yet", g_characterCreatorAttempts);
                     }
                 }
+
+                // Some runtime versions complete the script-driven menu before
+                // UI polling observes its open state. Never auto-accept an
+                // untouched default, but honor a player profile that changed
+                // after the bounded menu request sequence.
+                if (g_characterCreatorAttempts >= 3 &&
+                    now - g_lastCharacterCreatorRequest >= std::chrono::seconds(2) &&
+                    CharacterCreatorProfileChanged(player)) {
+                    logs::warn("[MP CHARACTER CREATE RECOVERY] menu lifecycle was not observed; changed player profile accepted");
+                    return true;
+                }
                 return false;
             }
 
             if (ui && ui->IsMenuOpen(RE::RaceSexMenu::MENU_NAME)) return false;
 
-            logs::info("[MP CHARACTER CREATE] RaceSex Menu closed; multiplayer appearance accepted");
-            return true;
+            if (g_characterCreatorClosed) {
+                logs::info("[MP CHARACTER CREATE] RaceSex Menu closed; multiplayer appearance accepted");
+                return true;
+            }
+
+            return false;
+        }
+    }
+
+    void WorldBootstrapManager::NotifyCharacterCreatorMenuEvent(bool a_opening)
+    {
+        if (!g_characterCreatorRequested) return;
+        if (a_opening) {
+            g_characterCreatorObservedOpen = true;
+            logs::info("[MP CHARACTER CREATE] RaceSex Menu open; waiting for player confirmation");
+        } else if (g_characterCreatorObservedOpen) {
+            g_characterCreatorClosed = true;
+            logs::info("[MP CHARACTER CREATE] RaceSex Menu close event received");
         }
     }
 
@@ -252,9 +300,13 @@ namespace SkyrimMP
         g_appliedPlayerEntityId = 0;
         g_characterCreatorRequested = false;
         g_characterCreatorObservedOpen = false;
+        g_characterCreatorClosed = false;
         g_characterCreatorAttempts = 0;
         g_lastCharacterCreatorRequest = {};
         g_worldContextReadyAt = {};
+        g_characterCreatorBaselineName.clear();
+        g_characterCreatorBaselineRace = 0;
+        g_characterCreatorBaselineWeight = 0.0f;
         g_networkReady.store(false, std::memory_order_release);
         g_applied.store(false, std::memory_order_release);
         logs::info("[WORLD BOOTSTRAP] reset");

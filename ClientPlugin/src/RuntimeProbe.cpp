@@ -99,7 +99,14 @@ namespace SkyrimMP
             }
 
             if (base->faceData) {
-                for (std::size_t i = 0; i < appearance.faceMorphs.size(); ++i) appearance.faceMorphs[i] = base->faceData->morphs[i];
+                for (std::size_t i = 0; i < appearance.faceMorphs.size(); ++i) {
+                    const auto morph = base->faceData->morphs[i];
+                    // RaceMenu can briefly expose uninitialised FaceGen values
+                    // while it rebuilds the player's head. A profile must stay
+                    // serializable throughout that transition; neutralize only
+                    // values that cannot be represented safely on the wire.
+                    appearance.faceMorphs[i] = std::isfinite(morph) && std::abs(morph) <= 100.0f ? morph : 0.0f;
+                }
                 for (std::size_t i = 0; i < appearance.faceParts.size(); ++i) appearance.faceParts[i] = base->faceData->parts[i];
             }
 

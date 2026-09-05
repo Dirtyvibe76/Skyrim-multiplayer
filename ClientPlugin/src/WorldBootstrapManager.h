@@ -22,6 +22,7 @@ namespace SkyrimMP
     public:
         static void Enqueue(const ServerWorldBootstrap& a_bootstrap);
         static std::size_t ApplyPending();
+        static void NotifyCharacterCreatorMenuEvent(bool a_opening);
         static void Reset();
         static bool HasApplied();
     };
