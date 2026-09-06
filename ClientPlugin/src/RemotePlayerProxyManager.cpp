@@ -169,6 +169,14 @@ namespace SkyrimMP
             base.originalRace = race;
             base.SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kFemale, appearance.sex == 1, false);
             base.SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kNoActivation, true, false);
+            // A remote avatar is presentation-only until authoritative player
+            // combat exists.  It must never enter Skyrim's native hit/death
+            // pipeline: that pipeline expects a locally-owned actor with a
+            // complete combat controller and caused a contact crash in the
+            // two-client test.
+            base.SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kIsGhost, true, false);
+            base.SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kInvulnerable, true, false);
+            base.SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kDoesntBleed, true, false);
             base.weight = std::clamp(appearance.weight, 0.0f, 100.0f);
             if (!appearance.displayName.empty()) base.SetFullName(appearance.displayName.c_str());
 
@@ -243,6 +251,9 @@ namespace SkyrimMP
             }
 
             duplicate->SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kNoActivation, true, false);
+            duplicate->SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kIsGhost, true, false);
+            duplicate->SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kInvulnerable, true, false);
+            duplicate->SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kDoesntBleed, true, false);
             if (appearance && appearance->valid) ApplyAppearanceToBase(*duplicate, *appearance, networkEntityId);
             return duplicate;
         }
@@ -254,7 +265,7 @@ namespace SkyrimMP
             actor.SetCollision(false);
             actor.EnableAI(false);
             logs::info(
-                "[REMOTE PLAYER AVATAR READY] networkId={:016X} form={:08X} base={:08X} mode=npc-visual-shell",
+                "[REMOTE PLAYER AVATAR READY] networkId={:016X} form={:08X} base={:08X} mode=ghost-invulnerable-visual-shell",
                 networkEntityId,
                 actor.GetFormID(),
                 baseFormId);
