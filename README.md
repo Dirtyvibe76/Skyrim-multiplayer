@@ -72,7 +72,7 @@ need dedicated synchronization and multi-client gameplay validation.
 
 ## Current status
 
-The current development protocol is **replication protocol 9** over wire
+The current development protocol is **replication protocol 10** over wire
 protocol 2. The following paths have been built and exercised against Skyrim
 SE/AE with SKSE64:
 
@@ -83,6 +83,12 @@ SE/AE with SKSE64:
 - Persistent server-owned character location across reconnects and restarts.
 - Duplicate-character login rejection to protect MP save ownership.
 - Reliable session/bootstrap traffic and interest-based entity replication.
+- Server-authoritative nearby NPC transform observation with deterministic
+  observer selection, game-thread client reconciliation, bounded/coalesced
+  client queues, and persistent actor state across reconnects and dedicated
+  server restarts. One-client runtime validation passed with 138 accepted
+  observations and zero rejects; simultaneous two-client visual validation is
+  still required.
 - Unique NPC-backed remote-player avatars with reliable name, race, sex,
   weight, face, hair, head-part and body appearance profiles.
 - Event-driven combat/death status transport without unsafe actor-value reads.
@@ -158,9 +164,9 @@ Work required before calling this a complete co-op game:
    and stamina, without relying on unsafe early-frame actor virtual calls.
 4. Inventory/container transactions with server ownership, atomic validation,
    rollback, and duplicate-item protection.
-5. Compile imported quest definitions into executable server quest programs;
-   add persistent parties, shared quest instances, validated progress events,
-   client projections, world transitions, and idempotent reward transactions.
+5. Connect the existing authoritative quest programs and persistent party
+   quest runtime to client gameplay-event evidence, journal projections,
+   world transitions, and reward delivery.
 6. Authoritative activation state for doors, locks, traps, furniture, dropped
    objects, crafting, harvesting, and other persistent world interactions.
 7. NPC AI ownership and migration so exactly one authority drives each actor.

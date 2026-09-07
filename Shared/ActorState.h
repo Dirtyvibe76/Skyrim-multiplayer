@@ -14,5 +14,8 @@ namespace SkyrimMP
         std::uint32_t worldspaceFormId{};
         Vec3 position{};
         Vec3 rotation{};
+        float health{};
+        bool dead{};
+        bool inCombat{};
     };
 }

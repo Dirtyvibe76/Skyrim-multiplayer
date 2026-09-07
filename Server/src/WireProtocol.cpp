@@ -86,7 +86,7 @@ namespace SkyrimMP::Server
             AppendKey(out, snapshot.location.cell);
             AppendKey(out, snapshot.location.worldspace);
             AppendKey(out, snapshot.sourceRecord);
-            if (snapshot.kind == RuntimeEntityKind::Player) {
+            if (snapshot.kind == RuntimeEntityKind::Player || snapshot.kind == RuntimeEntityKind::Actor) {
                 AppendFloat(out, snapshot.health);
                 AppendFloat(out, snapshot.magicka);
                 AppendFloat(out, snapshot.stamina);
@@ -94,10 +94,12 @@ namespace SkyrimMP::Server
                 if (snapshot.dead) actorFlags |= 0x01;
                 if (snapshot.inCombat) actorFlags |= 0x02;
                 AppendIntegral(out, actorFlags);
-                AppendIntegral(out, snapshot.actionFlags);
-                if (snapshot.equippedFormIds.size() > 32) throw std::runtime_error("snapshot equipment exceeds wire limit");
-                AppendIntegral(out, static_cast<std::uint8_t>(snapshot.equippedFormIds.size()));
-                for (const auto formId : snapshot.equippedFormIds) AppendIntegral(out, formId);
+                if (snapshot.kind == RuntimeEntityKind::Player) {
+                    AppendIntegral(out, snapshot.actionFlags);
+                    if (snapshot.equippedFormIds.size() > 32) throw std::runtime_error("snapshot equipment exceeds wire limit");
+                    AppendIntegral(out, static_cast<std::uint8_t>(snapshot.equippedFormIds.size()));
+                    for (const auto formId : snapshot.equippedFormIds) AppendIntegral(out, formId);
+                }
             }
         }
 
@@ -126,7 +128,7 @@ namespace SkyrimMP::Server
             snapshot.location.cell = ReadKey(bytes, offset);
             snapshot.location.worldspace = ReadKey(bytes, offset);
             snapshot.sourceRecord = ReadKey(bytes, offset);
-            if (snapshot.kind == RuntimeEntityKind::Player) {
+            if (snapshot.kind == RuntimeEntityKind::Player || snapshot.kind == RuntimeEntityKind::Actor) {
                 snapshot.health = ReadFloat(bytes, offset);
                 snapshot.magicka = ReadFloat(bytes, offset);
                 snapshot.stamina = ReadFloat(bytes, offset);
@@ -134,15 +136,17 @@ namespace SkyrimMP::Server
                 if ((actorFlags & ~0x03u) != 0) throw std::runtime_error("invalid actor-state flags on wire");
                 snapshot.dead = (actorFlags & 0x01) != 0;
                 snapshot.inCombat = (actorFlags & 0x02) != 0;
-                snapshot.actionFlags = ReadIntegral<std::uint16_t>(bytes, offset);
-                if ((snapshot.actionFlags & ~static_cast<std::uint16_t>((1u << 9) - 1)) != 0) {
-                    throw std::runtime_error("invalid action-state flags on wire");
-                }
-                const auto equipmentCount = ReadIntegral<std::uint8_t>(bytes, offset);
-                if (equipmentCount > 32) throw std::runtime_error("snapshot equipment exceeds wire limit");
-                snapshot.equippedFormIds.reserve(equipmentCount);
-                for (std::uint8_t i = 0; i < equipmentCount; ++i) {
-                    snapshot.equippedFormIds.push_back(ReadIntegral<std::uint32_t>(bytes, offset));
+                if (snapshot.kind == RuntimeEntityKind::Player) {
+                    snapshot.actionFlags = ReadIntegral<std::uint16_t>(bytes, offset);
+                    if ((snapshot.actionFlags & ~static_cast<std::uint16_t>((1u << 9) - 1)) != 0) {
+                        throw std::runtime_error("invalid action-state flags on wire");
+                    }
+                    const auto equipmentCount = ReadIntegral<std::uint8_t>(bytes, offset);
+                    if (equipmentCount > 32) throw std::runtime_error("snapshot equipment exceeds wire limit");
+                    snapshot.equippedFormIds.reserve(equipmentCount);
+                    for (std::uint8_t i = 0; i < equipmentCount; ++i) {
+                        snapshot.equippedFormIds.push_back(ReadIntegral<std::uint32_t>(bytes, offset));
+                    }
                 }
             }
             return snapshot;

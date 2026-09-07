@@ -5,7 +5,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace SkyrimMP::Server
@@ -207,6 +211,7 @@ namespace SkyrimMP::Server
         entity.location = location;
         ++entity.revision;
         ++registry.updates;
+        if (entity.kind == RuntimeEntityKind::Actor) ++registry.actorUpdates;
         if (rebucket) {
             AddToBucket(registry, entity);
             ++registry.rebuckets;
@@ -243,6 +248,7 @@ namespace SkyrimMP::Server
         if (changed) {
             ++entity.revision;
             ++registry.updates;
+            if (entity.kind == RuntimeEntityKind::Actor) ++registry.actorUpdates;
         }
         return true;
     }
@@ -304,5 +310,98 @@ namespace SkyrimMP::Server
             ++registry.updates;
         }
         return true;
+    }
+
+    std::size_t LoadRuntimeActorStates(RuntimeEntityRegistry& registry, const std::filesystem::path& path)
+    {
+        std::ifstream input(path);
+        if (!input) return 0;
+
+        std::string magic;
+        unsigned version{};
+        if (!(input >> magic >> version) || magic != "SKYRIMMP_WORLD_ACTORS" || version != 1) {
+            throw std::runtime_error("persisted world actor state header is malformed");
+        }
+
+        std::size_t loaded = 0;
+        while (true) {
+            unsigned sourceKind{};
+            if (!(input >> sourceKind)) {
+                if (input.eof()) break;
+                throw std::runtime_error("persisted world actor state is malformed");
+            }
+
+            CanonicalRecordKey source;
+            unsigned exterior{}, hasCell{}, hasWorld{}, cellKind{}, worldKind{}, dead{}, inCombat{}, hasActor{}, hasStatus{};
+            RuntimeEntityLocation location;
+            WorldTransform transform;
+            float health{}, magicka{}, stamina{};
+            if (!(input >> source.namespaceIndex >> source.localId
+                    >> exterior >> hasCell >> hasWorld
+                    >> cellKind >> location.cell.namespaceIndex >> location.cell.localId
+                    >> worldKind >> location.worldspace.namespaceIndex >> location.worldspace.localId
+                    >> transform.x >> transform.y >> transform.z
+                    >> transform.pitch >> transform.yaw >> transform.roll
+                    >> health >> magicka >> stamina >> dead >> inCombat >> hasActor >> hasStatus) ||
+                sourceKind > 1 || cellKind > 1 || worldKind > 1 || exterior > 1 || hasCell > 1 || hasWorld > 1 ||
+                dead > 1 || inCombat > 1 || hasActor != 1 || hasStatus > 1) {
+                throw std::runtime_error("persisted world actor state row is malformed");
+            }
+
+            source.kind = sourceKind ? FormNamespaceKind::Light : FormNamespaceKind::Full;
+            location.exterior = exterior != 0;
+            location.hasCell = hasCell != 0;
+            location.hasWorldspace = hasWorld != 0;
+            location.cell.kind = cellKind ? FormNamespaceKind::Light : FormNamespaceKind::Full;
+            location.worldspace.kind = worldKind ? FormNamespaceKind::Light : FormNamespaceKind::Full;
+
+            const auto sourceIt = registry.sourceToNetwork.find(source);
+            if (sourceIt == registry.sourceToNetwork.end()) continue;
+            const auto entityIt = registry.entities.find(sourceIt->second);
+            if (entityIt == registry.entities.end() || entityIt->second.kind != RuntimeEntityKind::Actor) continue;
+            if (!UpdateRuntimeEntity(registry, sourceIt->second, transform, location) ||
+                !UpdateRuntimeActorState(registry, sourceIt->second, health, magicka, stamina, dead != 0, inCombat != 0)) {
+                throw std::runtime_error("persisted world actor state failed validation");
+            }
+            entityIt->second.hasStatusState = hasStatus != 0;
+            ++loaded;
+        }
+        return loaded;
+    }
+
+    std::size_t SaveRuntimeActorStates(const RuntimeEntityRegistry& registry, const std::filesystem::path& path)
+    {
+        if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path());
+        const auto temporary = path.string() + ".tmp";
+        std::size_t saved = 0;
+        {
+            std::ofstream output(temporary, std::ios::trunc);
+            if (!output) throw std::runtime_error("failed to open world actor state temporary file");
+            output << "SKYRIMMP_WORLD_ACTORS 1\n"
+                   << std::setprecision(std::numeric_limits<float>::max_digits10);
+            for (const auto& [id, entity] : registry.entities) {
+                (void)id;
+                if (entity.kind != RuntimeEntityKind::Actor || !entity.hasSourceRecord || !entity.hasActorState) continue;
+                output << static_cast<unsigned>(entity.sourceRecord.kind == FormNamespaceKind::Light) << ' '
+                       << entity.sourceRecord.namespaceIndex << ' ' << entity.sourceRecord.localId << ' '
+                       << entity.location.exterior << ' ' << entity.location.hasCell << ' ' << entity.location.hasWorldspace << ' '
+                       << static_cast<unsigned>(entity.location.cell.kind == FormNamespaceKind::Light) << ' '
+                       << entity.location.cell.namespaceIndex << ' ' << entity.location.cell.localId << ' '
+                       << static_cast<unsigned>(entity.location.worldspace.kind == FormNamespaceKind::Light) << ' '
+                       << entity.location.worldspace.namespaceIndex << ' ' << entity.location.worldspace.localId << ' '
+                       << entity.transform.x << ' ' << entity.transform.y << ' ' << entity.transform.z << ' '
+                       << entity.transform.pitch << ' ' << entity.transform.yaw << ' ' << entity.transform.roll << ' '
+                       << entity.health << ' ' << entity.magicka << ' ' << entity.stamina << ' '
+                       << entity.dead << ' ' << entity.inCombat << " 1 " << entity.hasStatusState << '\n';
+                ++saved;
+            }
+            if (!output) throw std::runtime_error("failed to write world actor state temporary file");
+        }
+        std::error_code error;
+        std::filesystem::remove(path, error);
+        error.clear();
+        std::filesystem::rename(temporary, path, error);
+        if (error) throw std::runtime_error("failed to commit world actor state: " + error.message());
+        return saved;
     }
 }

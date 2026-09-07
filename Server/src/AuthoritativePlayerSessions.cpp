@@ -109,7 +109,7 @@ namespace SkyrimMP::Server
         {
             const auto kind = ReadIntegral<std::uint8_t>(bytes, offset);
             if (kind < static_cast<std::uint8_t>(SessionControlKind::Hello) ||
-                kind > static_cast<std::uint8_t>(SessionControlKind::AppearanceProfile)) {
+                kind > static_cast<std::uint8_t>(SessionControlKind::ActorObservation)) {
                 throw std::runtime_error("authoritative session control kind invalid");
             }
             return static_cast<SessionControlKind>(kind);
@@ -247,6 +247,50 @@ namespace SkyrimMP::Server
                 throw std::runtime_error("authoritative player request radius invalid");
             }
             return requested;
+        }
+
+        struct ActorObservation
+        {
+            CanonicalRecordKey source;
+            RuntimeEntityLocation location;
+            WorldTransform transform;
+            float health{};
+            bool dead{};
+            bool inCombat{};
+        };
+
+        ActorObservation DecodeActorObservation(const std::vector<std::uint8_t>& bytes, std::size_t& offset)
+        {
+            ActorObservation observation;
+            observation.source = ReadKey(bytes, offset);
+            const auto flags = ReadIntegral<std::uint8_t>(bytes, offset);
+            if ((flags & ~0x07u) != 0) throw std::runtime_error("actor observation location flags invalid");
+            observation.location.exterior = (flags & 0x01) != 0;
+            observation.location.hasCell = (flags & 0x02) != 0;
+            observation.location.hasWorldspace = (flags & 0x04) != 0;
+            observation.location.cell = ReadKey(bytes, offset);
+            observation.location.worldspace = ReadKey(bytes, offset);
+            observation.transform.x = ReadFloat(bytes, offset);
+            observation.transform.y = ReadFloat(bytes, offset);
+            observation.transform.z = ReadFloat(bytes, offset);
+            observation.transform.pitch = ReadFloat(bytes, offset);
+            observation.transform.yaw = ReadFloat(bytes, offset);
+            observation.transform.roll = ReadFloat(bytes, offset);
+            observation.health = ReadFloat(bytes, offset);
+            const auto actorFlags = ReadIntegral<std::uint8_t>(bytes, offset);
+            if ((actorFlags & ~0x03u) != 0) throw std::runtime_error("actor observation state flags invalid");
+            observation.dead = (actorFlags & 0x01) != 0;
+            observation.inCombat = (actorFlags & 0x02) != 0;
+            if (!observation.location.hasCell ||
+                (observation.location.exterior && !observation.location.hasWorldspace) ||
+                !std::isfinite(observation.transform.x) || !std::isfinite(observation.transform.y) ||
+                !std::isfinite(observation.transform.z) || !std::isfinite(observation.transform.pitch) ||
+                !std::isfinite(observation.transform.yaw) || !std::isfinite(observation.transform.roll) ||
+                !std::isfinite(observation.health) ||
+                observation.health < 0.0f || observation.health > 1000000.0f) {
+                throw std::runtime_error("actor observation failed validation");
+            }
+            return observation;
         }
 
         bool FiniteTransform(const WorldTransform& transform)
@@ -516,6 +560,32 @@ namespace SkyrimMP::Server
 
     void ServerSessionManager::ProcessAuthoritativeControlPackets(NetworkTransport& transport, RuntimeEntityRegistry& registry)
     {
+        const auto observationWithinPlayerInterest = [&](const AuthenticatedClientSession& observer, const ActorObservation& observation) {
+            if (!observer.hasPlayerEntity) return false;
+            const auto playerIt = registry.entities.find(observer.playerEntityId);
+            if (playerIt == registry.entities.end()) return false;
+            const auto& player = playerIt->second;
+            if (observation.location.exterior != player.location.exterior) return false;
+            if (!observation.location.exterior) return observation.location.cell == player.location.cell;
+            if (!observation.location.hasWorldspace || !player.location.hasWorldspace ||
+                observation.location.worldspace != player.location.worldspace) return false;
+            constexpr double kMaximumObservationRadius = 16384.0;
+            const auto dx = static_cast<double>(observation.transform.x) - player.transform.x;
+            const auto dy = static_cast<double>(observation.transform.y) - player.transform.y;
+            const auto dz = static_cast<double>(observation.transform.z) - player.transform.z;
+            return dx * dx + dy * dy + dz * dz <= kMaximumObservationRadius * kMaximumObservationRadius;
+        };
+
+        const auto authoritativeObserver = [&](const ActorObservation& observation) {
+            std::uint64_t selected = 0;
+            for (const auto& [endpoint, candidate] : sessions_) {
+                (void)endpoint;
+                if (!observationWithinPlayerInterest(candidate, observation)) continue;
+                if (selected == 0 || candidate.sessionId < selected) selected = candidate.sessionId;
+            }
+            return selected;
+        };
+
         const auto sendAppearance = [&](AuthenticatedClientSession& recipient, NetworkEntityId entityId, const PlayerAppearance& appearance) {
             if (!recipient.hasPlayerEntity || !ValidAppearance(appearance)) return;
             transport.SendControl(
@@ -646,6 +716,57 @@ namespace SkyrimMP::Server
                                   << " race=" << appearance.raceFormId
                                   << " sex=" << static_cast<unsigned>(appearance.sex)
                                   << " headParts=" << appearance.headPartFormIds.size() << '\n';
+                    }
+                    continue;
+                }
+
+                if (kind == SessionControlKind::ActorObservation) {
+                    ++stats_.actorObservationsReceived;
+                    const auto observation = DecodeActorObservation(incoming.payload, offset);
+                    EnsureConsumed(incoming.payload, offset);
+                    session.lastHeartbeat = std::chrono::steady_clock::now();
+
+                    const auto sourceIt = registry.sourceToNetwork.find(observation.source);
+                    if (sourceIt == registry.sourceToNetwork.end() ||
+                        authoritativeObserver(observation) != session.sessionId ||
+                        !observationWithinPlayerInterest(session, observation)) {
+                        ++stats_.actorObservationsRejected;
+                        continue;
+                    }
+                    const auto entityIt = registry.entities.find(sourceIt->second);
+                    if (entityIt == registry.entities.end() || entityIt->second.kind != RuntimeEntityKind::Actor) {
+                        ++stats_.actorObservationsRejected;
+                        continue;
+                    }
+
+                    constexpr double kMaximumActorStep = 16384.0;
+                    const auto dx = static_cast<double>(observation.transform.x) - entityIt->second.transform.x;
+                    const auto dy = static_cast<double>(observation.transform.y) - entityIt->second.transform.y;
+                    const auto dz = static_cast<double>(observation.transform.z) - entityIt->second.transform.z;
+                    if (entityIt->second.hasActorState &&
+                        dx * dx + dy * dy + dz * dz > kMaximumActorStep * kMaximumActorStep) {
+                        ++stats_.actorObservationsRejected;
+                        continue;
+                    }
+
+                    const auto previousRevision = entityIt->second.revision;
+                    const auto magicka = entityIt->second.magicka;
+                    const auto stamina = entityIt->second.stamina;
+                    if (!UpdateRuntimeEntity(registry, sourceIt->second, observation.transform, observation.location) ||
+                        !UpdateRuntimeActorState(registry, sourceIt->second, observation.health, magicka, stamina,
+                            observation.dead, observation.inCombat)) {
+                        ++stats_.actorObservationsRejected;
+                        continue;
+                    }
+                    ++stats_.actorObservationsApplied;
+                    const auto updated = registry.entities.find(sourceIt->second);
+                    if (updated != registry.entities.end() && updated->second.revision != previousRevision) {
+                        std::cout << "[ACTOR-AUTHORITY] session=" << session.sessionId
+                                  << " character=" << session.clientNonce
+                                  << " entity=" << sourceIt->second
+                                  << " revision=" << updated->second.revision
+                                  << " health=" << observation.health
+                                  << " dead=" << observation.dead << '\n';
                     }
                     continue;
                 }

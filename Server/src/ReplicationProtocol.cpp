@@ -146,7 +146,7 @@ namespace SkyrimMP::Server
         frame.sequence = ++client.framesBuilt;
 
         const auto interest = CollectRuntimeInterestSet(registry, subscription);
-        frame.interestEntities = interest.size();
+        frame.interestEntities = 0;
         std::unordered_set<NetworkEntityId> interested;
         interested.reserve(interest.size());
 
@@ -160,6 +160,9 @@ namespace SkyrimMP::Server
             const auto entityIt = registry.entities.find(id);
             if (entityIt == registry.entities.end()) throw std::runtime_error("interest set references missing runtime entity");
             const auto& entity = entityIt->second;
+            if (entity.kind == RuntimeEntityKind::StaticReference ||
+                (entity.kind == RuntimeEntityKind::Actor && !entity.hasActorState)) continue;
+            ++frame.interestEntities;
 
             if (client.pendingReliable.contains(id)) continue;
 

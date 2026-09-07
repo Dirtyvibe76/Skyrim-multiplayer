@@ -48,6 +48,10 @@ namespace SkyrimMP::Server
         if (!registry.questPrograms) throw std::runtime_error("live server loop requires compiled quest programs");
         PartyQuestManager partyQuests(*registry.questPrograms);
         partyQuests.Load("server-data/party-quests.state");
+        const std::filesystem::path worldActorStatePath = "server-data/world-actors.state";
+        const auto restoredWorldActors = LoadRuntimeActorStates(registry, worldActorStatePath);
+        std::cout << "[WORLD-ACTOR-STATE] restored=" << restoredWorldActors
+                  << " path=" << worldActorStatePath.string() << '\n';
 
         g_stopRequested.store(false, std::memory_order_relaxed);
         SetConsoleCtrlHandler(ConsoleHandler, TRUE);
@@ -55,6 +59,8 @@ namespace SkyrimMP::Server
         const auto tickInterval = std::chrono::microseconds(1000000 / tickHz);
         auto nextTick = std::chrono::steady_clock::now();
         auto nextStatus = nextTick + std::chrono::seconds(5);
+        auto nextWorldSave = nextTick + std::chrono::seconds(5);
+        auto persistedActorUpdates = registry.actorUpdates;
         std::uint64_t ticks{};
         std::uint64_t replicationPasses{};
 
@@ -97,6 +103,9 @@ namespace SkyrimMP::Server
                           << " playerApplied=" << s.playerStateApplied
                           << " playerRejected=" << s.playerStateRejected
                           << " playerDespawned=" << s.playerEntitiesDespawned
+                          << " actorObserved=" << s.actorObservationsReceived
+                          << " actorApplied=" << s.actorObservationsApplied
+                          << " actorRejected=" << s.actorObservationsRejected
                           << " interestUpdates=" << s.interestUpdates
                           << " replicationFrames=" << s.replicationFrames
                           << " replicationMessages=" << s.replicationMessages
@@ -111,11 +120,22 @@ namespace SkyrimMP::Server
                 nextStatus = now + std::chrono::seconds(5);
             }
 
+            if (now >= nextWorldSave) {
+                if (registry.actorUpdates != persistedActorUpdates) {
+                    const auto saved = SaveRuntimeActorStates(registry, worldActorStatePath);
+                    persistedActorUpdates = registry.actorUpdates;
+                    std::cout << "[WORLD-ACTOR-STATE] saved=" << saved
+                              << " updates=" << persistedActorUpdates << '\n';
+                }
+                nextWorldSave = now + std::chrono::seconds(5);
+            }
+
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
         SetConsoleCtrlHandler(ConsoleHandler, FALSE);
         sessions.FlushAuthoritativePlayers(registry);
+        const auto savedWorldActors = SaveRuntimeActorStates(registry, worldActorStatePath);
         partyQuests.Save("server-data/party-quests.state");
         std::cout << "[LIVE-STOP] ticks=" << ticks
                   << " sessions=" << sessions.SessionCount()
@@ -127,6 +147,10 @@ namespace SkyrimMP::Server
                   << " playerApplied=" << sessions.Stats().playerStateApplied
                   << " playerRejected=" << sessions.Stats().playerStateRejected
                   << " playerDespawned=" << sessions.Stats().playerEntitiesDespawned
+                  << " actorObserved=" << sessions.Stats().actorObservationsReceived
+                  << " actorApplied=" << sessions.Stats().actorObservationsApplied
+                  << " actorRejected=" << sessions.Stats().actorObservationsRejected
+                  << " worldActorsSaved=" << savedWorldActors
                   << " replicationFrames=" << sessions.Stats().replicationFrames
                   << " replicationMessages=" << sessions.Stats().replicationMessages
                   << " reliablePackets=" << sessions.Stats().reliableReplicationPackets

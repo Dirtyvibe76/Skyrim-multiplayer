@@ -7,6 +7,7 @@
 #include "WorldSpatialContext.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -70,6 +71,7 @@ namespace SkyrimMP::Server
         std::uint64_t despawned{};
         std::uint64_t updates{};
         std::uint64_t rebuckets{};
+        std::uint64_t actorUpdates{};
     };
 
     RuntimeEntityRegistry BuildRuntimeEntityRegistry(
@@ -114,4 +116,12 @@ namespace SkyrimMP::Server
         RuntimeEntityRegistry& a_registry,
         NetworkEntityId a_id,
         std::uint16_t a_actionFlags);
+
+    std::size_t LoadRuntimeActorStates(
+        RuntimeEntityRegistry& a_registry,
+        const std::filesystem::path& a_path);
+
+    std::size_t SaveRuntimeActorStates(
+        const RuntimeEntityRegistry& a_registry,
+        const std::filesystem::path& a_path);
 }

@@ -22,7 +22,8 @@ namespace SkyrimMP::Server
         Interest = 6,
         BootstrapRequest = 7,
         WorldBootstrap = 8,
-        AppearanceProfile = 9
+        AppearanceProfile = 9,
+        ActorObservation = 10
     };
 
     enum class SessionRejectReason : std::uint8_t
@@ -82,6 +83,9 @@ namespace SkyrimMP::Server
         std::uint64_t playerStateSaves{};
         std::uint64_t appearanceProfilesReceived{};
         std::uint64_t appearanceProfilesSent{};
+        std::uint64_t actorObservationsReceived{};
+        std::uint64_t actorObservationsApplied{};
+        std::uint64_t actorObservationsRejected{};
     };
 
     class ServerSessionManager

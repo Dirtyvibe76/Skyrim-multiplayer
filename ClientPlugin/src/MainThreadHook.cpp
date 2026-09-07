@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "MainThreadHook.h"
+#include "ClientNetwork.h"
 #include "RuntimeProbe.h"
 #include "ObjectLoadProbe.h"
 #include "RemoteActorAdapter.h"
@@ -160,6 +161,7 @@ namespace SkyrimMP
                         state.cellFormId,
                         state.worldspaceFormId);
                     LogSpawn(state);
+                    ClientNetwork::SubmitLocalActor(state);
                     g_lastRelevantState.insert_or_assign(runtimeFormId, state);
                     continue;
                 }
@@ -193,6 +195,14 @@ namespace SkyrimMP
                         state.rotation.x,
                         state.rotation.y,
                         state.rotation.z);
+                }
+
+                if (PositionChanged(state, previous) || RotationChanged(state, previous) ||
+                    state.cellFormId != previous.cellFormId ||
+                    state.worldspaceFormId != previous.worldspaceFormId ||
+                    state.health != previous.health || state.dead != previous.dead ||
+                    state.inCombat != previous.inCombat) {
+                    ClientNetwork::SubmitLocalActor(state);
                 }
 
                 g_lastRelevantState.insert_or_assign(runtimeFormId, state);

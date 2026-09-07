@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "ClientNetwork.h"
+#include "RemoteActorAdapter.h"
 #include "RemotePlayerProxyManager.h"
 #include "WorldBootstrapManager.h"
 
@@ -29,10 +30,11 @@ namespace SkyrimMP
 
         constexpr std::uint32_t kWireMagic = 0x31504D53u;
         constexpr std::uint16_t kWireProtocolVersion = 2;
-        constexpr std::uint16_t kReplicationProtocolVersion = 9;
+        constexpr std::uint16_t kReplicationProtocolVersion = 10;
         constexpr std::uint16_t kServerPort = 10578;
         constexpr auto kLoadOrderRevision = "7dc35a831945468b790a6b3398236c0fe9fe7c8b32425be9ef07ca1434d6c808";
         constexpr std::size_t kMaxDatagram = 1200;
+        constexpr std::uint8_t kRuntimeEntityKindActor = 1;
         constexpr std::uint8_t kRuntimeEntityKindPlayer = 2;
         constexpr std::size_t kMaxAppearanceName = 63;
         constexpr std::size_t kMaxAppearanceHeadParts = 32;
@@ -49,7 +51,8 @@ namespace SkyrimMP
             Interest = 6,
             BootstrapRequest = 7,
             WorldBootstrap = 8,
-            AppearanceProfile = 9
+            AppearanceProfile = 9,
+            ActorObservation = 10
         };
         enum class ReplicationKind : std::uint8_t { Spawn = 0, Delta = 1, Despawn = 2 };
 
@@ -68,6 +71,8 @@ namespace SkyrimMP
             Vec3 rotation{};
             CanonicalKey cell{};
             CanonicalKey world{};
+            CanonicalKey source{};
+            bool hasSource{};
             bool exterior{};
             bool hasCell{};
             bool hasWorld{};
@@ -88,6 +93,15 @@ namespace SkyrimMP
         std::mutex g_playerMutex;
         PlayerState g_player{};
         bool g_hasPlayer = false;
+        std::mutex g_actorMutex;
+        std::unordered_map<std::uint32_t, ActorState> g_pendingActors;
+        constexpr std::size_t kMaxPendingActorObservations = 256;
+
+        void ClearPendingActorObservations()
+        {
+            std::scoped_lock lock(g_actorMutex);
+            g_pendingActors.clear();
+        }
 
         struct ServerTarget
         {
@@ -370,6 +384,44 @@ namespace SkyrimMP
             return EncodePlayerState(ControlKind::Interest, sessionId, player);
         }
 
+        std::optional<std::vector<std::uint8_t>> EncodeActorObservation(
+            std::uint64_t sessionId,
+            const ActorState& actor)
+        {
+            CanonicalKey source{};
+            CanonicalKey cell{};
+            CanonicalKey world{};
+            if (!RuntimeFormToCanonical(actor.runtimeFormId, source) ||
+                !RuntimeFormToCanonical(actor.cellFormId, cell)) return std::nullopt;
+            const bool exterior = actor.worldspaceFormId != 0;
+            if (exterior && !RuntimeFormToCanonical(actor.worldspaceFormId, world)) return std::nullopt;
+            if (!std::isfinite(actor.position.x) || !std::isfinite(actor.position.y) || !std::isfinite(actor.position.z) ||
+                !std::isfinite(actor.rotation.x) || !std::isfinite(actor.rotation.y) || !std::isfinite(actor.rotation.z) ||
+                !std::isfinite(actor.health) || actor.health < 0.0f || actor.health > 1000000.0f) return std::nullopt;
+
+            std::vector<std::uint8_t> out;
+            Append(out, static_cast<std::uint8_t>(ControlKind::ActorObservation));
+            Append(out, sessionId);
+            AppendKey(out, source);
+            std::uint8_t flags = 0x02;
+            if (exterior) flags |= 0x01 | 0x04;
+            Append(out, flags);
+            AppendKey(out, cell);
+            AppendKey(out, world);
+            AppendFloat(out, actor.position.x);
+            AppendFloat(out, actor.position.y);
+            AppendFloat(out, actor.position.z);
+            AppendFloat(out, actor.rotation.x);
+            AppendFloat(out, actor.rotation.y);
+            AppendFloat(out, actor.rotation.z);
+            AppendFloat(out, actor.health);
+            std::uint8_t actorFlags = 0;
+            if (actor.dead) actorFlags |= 0x01;
+            if (actor.inCombat) actorFlags |= 0x02;
+            Append(out, actorFlags);
+            return out;
+        }
+
         void SendDatagram(SOCKET socketValue, const sockaddr_in& server, const std::vector<std::uint8_t>& bytes)
         {
             const auto sent = sendto(socketValue, reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()), 0,
@@ -412,6 +464,20 @@ namespace SkyrimMP
                 replica.hasStatusState,
                 replica.actionFlags,
                 replica.equippedFormIds
+            });
+        }
+
+        void QueueRemoteActor(const ClientReplica& replica)
+        {
+            if (replica.entityKind != kRuntimeEntityKindActor || !replica.hasSource || !replica.hasActorState) return;
+            const auto runtimeFormId = CanonicalToRuntimeForm(replica.source);
+            if (runtimeFormId == 0) return;
+            constexpr std::uint32_t kServerSequenceBase = 0x40000000u;
+            RemoteActorAdapter::Enqueue(RemoteTransform{
+                runtimeFormId,
+                kServerSequenceBase | static_cast<std::uint32_t>(replica.revision & 0x3FFFFFFFu),
+                replica.position,
+                replica.rotation
             });
         }
 
@@ -462,8 +528,8 @@ namespace SkyrimMP
                 replica.rotation = { ReadFloat(bytes, offset), ReadFloat(bytes, offset), ReadFloat(bytes, offset) };
                 replica.cell = ReadKey(bytes, offset);
                 replica.world = ReadKey(bytes, offset);
-                (void)ReadKey(bytes, offset);
-                if (entityKind == kRuntimeEntityKindPlayer) {
+                replica.source = ReadKey(bytes, offset);
+                if (entityKind == kRuntimeEntityKindPlayer || entityKind == kRuntimeEntityKindActor) {
                     replica.health = ReadFloat(bytes, offset);
                     replica.magicka = ReadFloat(bytes, offset);
                     replica.stamina = ReadFloat(bytes, offset);
@@ -471,15 +537,18 @@ namespace SkyrimMP
                     if ((actorFlags & ~0x03u) != 0) throw std::runtime_error("invalid replicated actor flags");
                     replica.dead = (actorFlags & 0x01) != 0;
                     replica.inCombat = (actorFlags & 0x02) != 0;
-                    replica.actionFlags = Read<std::uint16_t>(bytes, offset);
-                    if ((replica.actionFlags & ~kKnownPlayerActionFlags) != 0) throw std::runtime_error("invalid replicated action flags");
-                    const auto equipmentCount = Read<std::uint8_t>(bytes, offset);
-                    if (equipmentCount > 32) throw std::runtime_error("replicated equipment exceeds client limit");
-                    replica.equippedFormIds.reserve(equipmentCount);
-                    for (std::uint8_t equipmentIndex = 0; equipmentIndex < equipmentCount; ++equipmentIndex) {
-                        replica.equippedFormIds.push_back(Read<std::uint32_t>(bytes, offset));
+                    if (entityKind == kRuntimeEntityKindPlayer) {
+                        replica.actionFlags = Read<std::uint16_t>(bytes, offset);
+                        if ((replica.actionFlags & ~kKnownPlayerActionFlags) != 0) throw std::runtime_error("invalid replicated action flags");
+                        const auto equipmentCount = Read<std::uint8_t>(bytes, offset);
+                        if (equipmentCount > 32) throw std::runtime_error("replicated equipment exceeds client limit");
+                        replica.equippedFormIds.reserve(equipmentCount);
+                        for (std::uint8_t equipmentIndex = 0; equipmentIndex < equipmentCount; ++equipmentIndex) {
+                            replica.equippedFormIds.push_back(Read<std::uint32_t>(bytes, offset));
+                        }
                     }
                 }
+                replica.hasSource = (flags & 0x01) != 0;
                 replica.exterior = (flags & 0x02) != 0;
                 replica.hasCell = (flags & 0x04) != 0;
                 replica.hasWorld = (flags & 0x08) != 0;
@@ -496,9 +565,10 @@ namespace SkyrimMP
                 }
 
                 const auto existing = replicas.find(id);
-                if (existing == replicas.end() || revision >= existing->second.revision) {
+                if (existing == replicas.end() || revision > existing->second.revision) {
                     replicas.insert_or_assign(id, replica);
                     QueueRemotePlayer(id, replica);
+                    QueueRemoteActor(replica);
                 }
                 if (kind == ReplicationKind::Spawn) ++spawns;
                 else ++deltas;
@@ -637,6 +707,7 @@ namespace SkyrimMP
                 lastServerPacket = {};
                 g_authenticated.store(false, std::memory_order_release);
                 WorldBootstrapManager::Reset();
+                ClearPendingActorObservations();
                 logs::warn("[NET-CLIENT] session reset reason={}; reconnecting", reason);
             };
 
@@ -713,6 +784,23 @@ namespace SkyrimMP
                             }
                         }
                         lastInterest = now;
+                    }
+
+                    if (bootstrapReceived && WorldBootstrapManager::HasApplied()) {
+                        std::vector<ActorState> actorBatch;
+                        {
+                            std::scoped_lock lock(g_actorMutex);
+                            actorBatch.reserve(std::min<std::size_t>(g_pendingActors.size(), 8));
+                            for (auto it = g_pendingActors.begin(); it != g_pendingActors.end() && actorBatch.size() < 8;) {
+                                actorBatch.push_back(it->second);
+                                it = g_pendingActors.erase(it);
+                            }
+                        }
+                        for (const auto& actor : actorBatch) {
+                            if (auto payload = EncodeActorObservation(sessionId, actor)) {
+                                SendDatagram(socketValue, server, MakePacket(PacketKind::Control, Channel::Unreliable, nextSequence++, 0, *payload));
+                            }
+                        }
                     }
                 }
 
@@ -853,6 +941,7 @@ namespace SkyrimMP
     void ClientNetwork::Start()
     {
         if (g_running.exchange(true, std::memory_order_acq_rel)) return;
+        ClearPendingActorObservations();
         WorldBootstrapManager::Reset();
         g_thread = std::jthread(NetworkThread);
     }
@@ -865,6 +954,7 @@ namespace SkyrimMP
             g_thread.join();
         }
         g_authenticated.store(false, std::memory_order_relaxed);
+        ClearPendingActorObservations();
         WorldBootstrapManager::Reset();
     }
 
@@ -873,6 +963,16 @@ namespace SkyrimMP
         std::scoped_lock lock(g_playerMutex);
         g_player = player;
         g_hasPlayer = player.formId != 0 && player.cellFormId != 0;
+    }
+
+    void ClientNetwork::SubmitLocalActor(const ActorState& actor)
+    {
+        if (actor.runtimeFormId == 0 || actor.cellFormId == 0 ||
+            static_cast<std::uint8_t>(actor.runtimeFormId >> 24) == 0xFF) return;
+        std::scoped_lock lock(g_actorMutex);
+        if (!g_pendingActors.contains(actor.runtimeFormId) &&
+            g_pendingActors.size() >= kMaxPendingActorObservations) return;
+        g_pendingActors.insert_or_assign(actor.runtimeFormId, actor);
     }
 
     bool ClientNetwork::IsAuthenticated()
