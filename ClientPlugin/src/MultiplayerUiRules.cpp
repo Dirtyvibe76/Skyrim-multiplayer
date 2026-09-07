@@ -128,8 +128,7 @@ namespace SkyrimMP::MultiplayerUiRules
         wrapped += WrapMenu<RE::MapMenu>(*ui) ? 1u : 0u;
         wrapped += WrapMenu<RE::StatsMenu>(*ui) ? 1u : 0u;
         wrapped += WrapMenu<RE::FavoritesMenu>(*ui) ? 1u : 0u;
-        // JournalMenu owns the System/Save/Load flow. Keep its vanilla pause semantics
-        // so Skyrim can serialize a stable world while multiplayer replication is active.
+        wrapped += WrapMenu<RE::JournalMenu>(*ui) ? 1u : 0u;
         wrapped += WrapMenu<RE::ContainerMenu>(*ui) ? 1u : 0u;
         wrapped += WrapMenu<RE::BarterMenu>(*ui) ? 1u : 0u;
         wrapped += WrapMenu<RE::GiftMenu>(*ui) ? 1u : 0u;
@@ -142,7 +141,7 @@ namespace SkyrimMP::MultiplayerUiRules
 
         g_menuRulesInstalled = wrapped != 0;
         logs::info(
-            "[MP UI RULES] non-pausing multiplayer menu creators installed wrapped={} exclusions=MainMenu,LoadingMenu,RaceSexMenu,SleepWaitMenu,Console,JournalMenu(SaveLoad)",
+            "[MP UI RULES] non-pausing multiplayer menu creators installed wrapped={} exclusions=MainMenu,LoadingMenu,RaceSexMenu,SleepWaitMenu,Console",
             wrapped);
         return g_menuRulesInstalled;
     }
