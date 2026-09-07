@@ -4,6 +4,7 @@
 #include "GameplayEventProbe.h"
 #include "MainThreadHook.h"
 #include "MultiplayerLaunchConfig.h"
+#include "MultiplayerUiRules.h"
 #include "ObjectLoadProbe.h"
 #include "WorldBootstrapManager.h"
 #include "BuildInfo.h"
@@ -116,6 +117,7 @@ namespace
     {
         SkyrimMP::MainThreadHook::ResetActorCache();
         SkyrimMP::GameplayEventProbe::Reset();
+        SkyrimMP::MultiplayerUiRules::SetActive(true);
         if (g_networkStarted) SkyrimMP::ClientNetwork::Stop();
         SkyrimMP::ClientNetwork::Start();
         g_networkStarted = true;
@@ -128,6 +130,12 @@ namespace
         }
 
         switch (a_message->type) {
+        case SKSE::MessagingInterface::kInputLoaded:
+            if (!SkyrimMP::MultiplayerUiRules::InstallInteractionRules()) {
+                logs::error("[MP UI RULES] input sink unavailable; remote-player activation feedback not installed");
+            }
+            break;
+
         case SKSE::MessagingInterface::kDataLoaded:
             logs::info("[ALPHA {}] Skyrim data loaded", SkyrimMP::BuildInfo::kVersion);
 
@@ -141,6 +149,10 @@ namespace
             }
             if (!g_gameplayEventProbeInstalled) {
                 g_gameplayEventProbeInstalled = SkyrimMP::GameplayEventProbe::Install();
+            }
+
+            if (!SkyrimMP::MultiplayerUiRules::InstallMenuRules()) {
+                logs::error("[MP UI RULES] non-pausing menu creator installation failed");
             }
 
             if (!g_menuEventSinkInstalled) {
@@ -167,6 +179,7 @@ namespace
                 StartMultiplayerNetwork();
                 logs::info("[ALPHA {}] new multiplayer-only character worker started", SkyrimMP::BuildInfo::kVersion);
             } else {
+                SkyrimMP::MultiplayerUiRules::SetActive(false);
                 SkyrimMP::MainThreadHook::ResetActorCache();
                 SkyrimMP::GameplayEventProbe::Reset();
                 if (g_networkStarted) {
