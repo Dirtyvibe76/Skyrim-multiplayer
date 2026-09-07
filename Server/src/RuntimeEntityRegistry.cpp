@@ -253,6 +253,19 @@ namespace SkyrimMP::Server
         return true;
     }
 
+    bool MarkRuntimeActorTransformAuthoritative(RuntimeEntityRegistry& registry, NetworkEntityId id)
+    {
+        const auto it = registry.entities.find(id);
+        if (it == registry.entities.end() || it->second.kind != RuntimeEntityKind::Actor) return false;
+        if (!it->second.hasAuthoritativeTransform) {
+            it->second.hasAuthoritativeTransform = true;
+            ++it->second.revision;
+            ++registry.updates;
+            ++registry.actorUpdates;
+        }
+        return true;
+    }
+
     bool UpdateRuntimeStatusState(
         RuntimeEntityRegistry& registry,
         NetworkEntityId id,
@@ -319,7 +332,7 @@ namespace SkyrimMP::Server
 
         std::string magic;
         unsigned version{};
-        if (!(input >> magic >> version) || magic != "SKYRIMMP_WORLD_ACTORS" || version != 1) {
+        if (!(input >> magic >> version) || magic != "SKYRIMMP_WORLD_ACTORS" || (version != 1 && version != 2)) {
             throw std::runtime_error("persisted world actor state header is malformed");
         }
 
@@ -344,7 +357,7 @@ namespace SkyrimMP::Server
                     >> transform.pitch >> transform.yaw >> transform.roll
                     >> health >> magicka >> stamina >> dead >> inCombat >> hasActor >> hasStatus) ||
                 sourceKind > 1 || cellKind > 1 || worldKind > 1 || exterior > 1 || hasCell > 1 || hasWorld > 1 ||
-                dead > 1 || inCombat > 1 || hasActor != 1 || hasStatus > 1) {
+                dead > 1 || inCombat > 1 || hasActor > 1 || hasStatus > 1) {
                 throw std::runtime_error("persisted world actor state row is malformed");
             }
 
@@ -360,10 +373,14 @@ namespace SkyrimMP::Server
             const auto entityIt = registry.entities.find(sourceIt->second);
             if (entityIt == registry.entities.end() || entityIt->second.kind != RuntimeEntityKind::Actor) continue;
             if (!UpdateRuntimeEntity(registry, sourceIt->second, transform, location) ||
-                !UpdateRuntimeActorState(registry, sourceIt->second, health, magicka, stamina, dead != 0, inCombat != 0)) {
+                !MarkRuntimeActorTransformAuthoritative(registry, sourceIt->second)) {
                 throw std::runtime_error("persisted world actor state failed validation");
             }
-            entityIt->second.hasStatusState = hasStatus != 0;
+            if (version >= 2 && hasActor != 0 &&
+                !UpdateRuntimeActorState(registry, sourceIt->second, health, magicka, stamina, dead != 0, inCombat != 0)) {
+                throw std::runtime_error("persisted world actor vital state failed validation");
+            }
+            if (version >= 2) entityIt->second.hasStatusState = hasStatus != 0;
             ++loaded;
         }
         return loaded;
@@ -377,11 +394,11 @@ namespace SkyrimMP::Server
         {
             std::ofstream output(temporary, std::ios::trunc);
             if (!output) throw std::runtime_error("failed to open world actor state temporary file");
-            output << "SKYRIMMP_WORLD_ACTORS 1\n"
+            output << "SKYRIMMP_WORLD_ACTORS 2\n"
                    << std::setprecision(std::numeric_limits<float>::max_digits10);
             for (const auto& [id, entity] : registry.entities) {
                 (void)id;
-                if (entity.kind != RuntimeEntityKind::Actor || !entity.hasSourceRecord || !entity.hasActorState) continue;
+                if (entity.kind != RuntimeEntityKind::Actor || !entity.hasSourceRecord || !entity.hasAuthoritativeTransform) continue;
                 output << static_cast<unsigned>(entity.sourceRecord.kind == FormNamespaceKind::Light) << ' '
                        << entity.sourceRecord.namespaceIndex << ' ' << entity.sourceRecord.localId << ' '
                        << entity.location.exterior << ' ' << entity.location.hasCell << ' ' << entity.location.hasWorldspace << ' '
@@ -392,7 +409,7 @@ namespace SkyrimMP::Server
                        << entity.transform.x << ' ' << entity.transform.y << ' ' << entity.transform.z << ' '
                        << entity.transform.pitch << ' ' << entity.transform.yaw << ' ' << entity.transform.roll << ' '
                        << entity.health << ' ' << entity.magicka << ' ' << entity.stamina << ' '
-                       << entity.dead << ' ' << entity.inCombat << " 1 " << entity.hasStatusState << '\n';
+                       << entity.dead << ' ' << entity.inCombat << ' ' << entity.hasActorState << ' ' << entity.hasStatusState << '\n';
                 ++saved;
             }
             if (!output) throw std::runtime_error("failed to write world actor state temporary file");

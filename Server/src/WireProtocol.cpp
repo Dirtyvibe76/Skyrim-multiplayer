@@ -74,6 +74,7 @@ namespace SkyrimMP::Server
             if (snapshot.location.hasWorldspace) flags |= 0x08;
             if (snapshot.hasActorState) flags |= 0x10;
             if (snapshot.hasStatusState) flags |= 0x20;
+            if (snapshot.hasAuthoritativeTransform) flags |= 0x40;
             AppendIntegral(out, flags);
             AppendIntegral(out, static_cast<std::uint16_t>(0));
             AppendIntegral(out, snapshot.revision);
@@ -118,6 +119,7 @@ namespace SkyrimMP::Server
             snapshot.location.hasWorldspace = (flags & 0x08) != 0;
             snapshot.hasActorState = (flags & 0x10) != 0;
             snapshot.hasStatusState = (flags & 0x20) != 0;
+            snapshot.hasAuthoritativeTransform = (flags & 0x40) != 0;
             snapshot.revision = ReadIntegral<std::uint64_t>(bytes, offset);
             snapshot.transform.x = ReadFloat(bytes, offset);
             snapshot.transform.y = ReadFloat(bytes, offset);
@@ -172,6 +174,7 @@ namespace SkyrimMP::Server
                 message.snapshot.hasSourceRecord = false;
                 message.snapshot.hasActorState = true;
                 message.snapshot.hasStatusState = true;
+                message.snapshot.hasAuthoritativeTransform = true;
                 message.snapshot.health = 87.5f;
                 message.snapshot.magicka = 42.0f;
                 message.snapshot.stamina = 63.25f;
@@ -294,6 +297,7 @@ namespace SkyrimMP::Server
             reliableRoundTrip.messages[1].kind != ReplicationMessageKind::Despawn ||
             !reliableRoundTrip.messages[0].snapshot.hasActorState ||
             !reliableRoundTrip.messages[0].snapshot.hasStatusState ||
+            !reliableRoundTrip.messages[0].snapshot.hasAuthoritativeTransform ||
             reliableRoundTrip.messages[0].snapshot.equippedFormIds.size() != 2 ||
             reliableRoundTrip.messages[0].snapshot.health != 87.5f ||
             reliableRoundTrip.messages[0].snapshot.magicka != 42.0f ||

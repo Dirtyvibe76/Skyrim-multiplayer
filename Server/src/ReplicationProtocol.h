@@ -26,6 +26,7 @@ namespace SkyrimMP::Server
         RuntimeEntityLocation location;
         CanonicalRecordKey sourceRecord;
         bool hasSourceRecord{};
+        bool hasAuthoritativeTransform{};
         float health{};
         float magicka{};
         float stamina{};

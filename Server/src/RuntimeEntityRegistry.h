@@ -40,6 +40,7 @@ namespace SkyrimMP::Server
         RuntimeEntityKind kind{ RuntimeEntityKind::StaticReference };
         CanonicalRecordKey sourceRecord;
         bool hasSourceRecord{};
+        bool hasAuthoritativeTransform{};
         WorldTransform transform;
         RuntimeEntityLocation location;
         float health{};
@@ -91,6 +92,10 @@ namespace SkyrimMP::Server
         NetworkEntityId a_id,
         const WorldTransform& a_transform,
         const RuntimeEntityLocation& a_location);
+
+    bool MarkRuntimeActorTransformAuthoritative(
+        RuntimeEntityRegistry& a_registry,
+        NetworkEntityId a_id);
 
     bool UpdateRuntimeActorState(
         RuntimeEntityRegistry& a_registry,

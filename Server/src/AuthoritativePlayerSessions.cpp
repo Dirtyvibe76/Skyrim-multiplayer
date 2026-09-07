@@ -743,18 +743,15 @@ namespace SkyrimMP::Server
                     const auto dx = static_cast<double>(observation.transform.x) - entityIt->second.transform.x;
                     const auto dy = static_cast<double>(observation.transform.y) - entityIt->second.transform.y;
                     const auto dz = static_cast<double>(observation.transform.z) - entityIt->second.transform.z;
-                    if (entityIt->second.hasActorState &&
+                    if (entityIt->second.hasAuthoritativeTransform &&
                         dx * dx + dy * dy + dz * dz > kMaximumActorStep * kMaximumActorStep) {
                         ++stats_.actorObservationsRejected;
                         continue;
                     }
 
                     const auto previousRevision = entityIt->second.revision;
-                    const auto magicka = entityIt->second.magicka;
-                    const auto stamina = entityIt->second.stamina;
                     if (!UpdateRuntimeEntity(registry, sourceIt->second, observation.transform, observation.location) ||
-                        !UpdateRuntimeActorState(registry, sourceIt->second, observation.health, magicka, stamina,
-                            observation.dead, observation.inCombat)) {
+                        !MarkRuntimeActorTransformAuthoritative(registry, sourceIt->second)) {
                         ++stats_.actorObservationsRejected;
                         continue;
                     }
@@ -765,8 +762,7 @@ namespace SkyrimMP::Server
                                   << " character=" << session.clientNonce
                                   << " entity=" << sourceIt->second
                                   << " revision=" << updated->second.revision
-                                  << " health=" << observation.health
-                                  << " dead=" << observation.dead << '\n';
+                                  << " transform=true\n";
                     }
                     continue;
                 }

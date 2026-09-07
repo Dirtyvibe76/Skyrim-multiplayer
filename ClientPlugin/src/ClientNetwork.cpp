@@ -73,6 +73,7 @@ namespace SkyrimMP
             CanonicalKey world{};
             CanonicalKey source{};
             bool hasSource{};
+            bool hasAuthoritativeTransform{};
             bool exterior{};
             bool hasCell{};
             bool hasWorld{};
@@ -469,7 +470,7 @@ namespace SkyrimMP
 
         void QueueRemoteActor(const ClientReplica& replica)
         {
-            if (replica.entityKind != kRuntimeEntityKindActor || !replica.hasSource || !replica.hasActorState) return;
+            if (replica.entityKind != kRuntimeEntityKindActor || !replica.hasSource || !replica.hasAuthoritativeTransform) return;
             const auto runtimeFormId = CanonicalToRuntimeForm(replica.source);
             if (runtimeFormId == 0) return;
             constexpr std::uint32_t kServerSequenceBase = 0x40000000u;
@@ -554,6 +555,7 @@ namespace SkyrimMP
                 replica.hasWorld = (flags & 0x08) != 0;
                 replica.hasActorState = (flags & 0x10) != 0;
                 replica.hasStatusState = (flags & 0x20) != 0;
+                replica.hasAuthoritativeTransform = (flags & 0x40) != 0;
 
                 if (entityKind == kRuntimeEntityKindPlayer) {
                     if (kind == ReplicationKind::Spawn) {

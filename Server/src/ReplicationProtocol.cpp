@@ -28,6 +28,7 @@ namespace SkyrimMP::Server
             snapshot.location = entity.location;
             snapshot.sourceRecord = entity.sourceRecord;
             snapshot.hasSourceRecord = entity.hasSourceRecord;
+            snapshot.hasAuthoritativeTransform = entity.hasAuthoritativeTransform;
             snapshot.health = entity.health;
             snapshot.magicka = entity.magicka;
             snapshot.stamina = entity.stamina;
@@ -161,7 +162,7 @@ namespace SkyrimMP::Server
             if (entityIt == registry.entities.end()) throw std::runtime_error("interest set references missing runtime entity");
             const auto& entity = entityIt->second;
             if (entity.kind == RuntimeEntityKind::StaticReference ||
-                (entity.kind == RuntimeEntityKind::Actor && !entity.hasActorState)) continue;
+                (entity.kind == RuntimeEntityKind::Actor && !entity.hasAuthoritativeTransform)) continue;
             ++frame.interestEntities;
 
             if (client.pendingReliable.contains(id)) continue;
