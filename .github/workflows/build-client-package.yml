@@ -65,7 +65,7 @@ jobs:
 
       - name: Build standalone launcher EXE
         shell: powershell
-        run: dotnet publish ClientLauncher\SkyrimMPLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o launcher-publish
+        run: dotnet publish ClientLauncher\SkyrimMPLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:InformationalVersion="0.1.0-alpha.4+build.${{ github.run_number }}" -o launcher-publish
 
       - name: Stage client package
         shell: powershell
