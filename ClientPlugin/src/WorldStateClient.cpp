@@ -7,6 +7,7 @@
 #include <cctype>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -22,6 +23,7 @@ namespace SkyrimMP
         constexpr std::uint16_t kWorldProtocol = 1;
         constexpr auto kLoadOrderRevision = "7dc35a831945468b790a6b3398236c0fe9fe7c8b32425be9ef07ca1434d6c808";
         constexpr std::size_t kMaxDatagram = 1200;
+        constexpr auto kPickupCorrelationWindow = 5s;
 
         enum class WorldPacketKind : std::uint8_t
         {
@@ -59,6 +61,13 @@ namespace SkyrimMP
             std::uint64_t revision{};
         };
 
+        struct RecentActivation
+        {
+            std::uint32_t referenceFormId{};
+            std::uint32_t baseObjectFormId{};
+            std::chrono::steady_clock::time_point capturedAt{};
+        };
+
         struct ServerTarget
         {
             std::string address{ "127.0.0.1" };
@@ -72,6 +81,7 @@ namespace SkyrimMP
         std::mutex g_stateMutex;
         std::unordered_map<std::uint32_t, PendingObservation> g_pending;
         std::unordered_map<std::uint32_t, AuthoritativeState> g_authoritative;
+        std::optional<RecentActivation> g_recentActivation;
 
         std::string Trim(std::string value)
         {
@@ -327,6 +337,64 @@ namespace SkyrimMP
             return reference && player && reference->GetFormID() == player->GetFormID();
         }
 
+        void RememberActivation(RE::TESObjectREFR* reference)
+        {
+            if (!reference || reference->As<RE::Actor>()) return;
+
+            const auto formId = reference->GetFormID();
+            CanonicalKey key;
+            if (!RuntimeFormToCanonical(formId, key)) return;
+
+            const auto* baseObject = reference->GetBaseObject();
+            if (!baseObject) return;
+
+            {
+                std::scoped_lock lock(g_stateMutex);
+                g_recentActivation = RecentActivation{
+                    formId,
+                    baseObject->GetFormID(),
+                    std::chrono::steady_clock::now()
+                };
+            }
+
+            logs::info(
+                "[WORLD-STATE-PICKUP] captured activation ref={:08X} base={:08X}",
+                formId,
+                baseObject->GetFormID());
+        }
+
+        std::uint32_t ResolveWorldPickupReference(const RE::TESContainerChangedEvent* event)
+        {
+            if (!event || event->oldContainer != 0) return 0;
+
+            if (auto reference = event->reference.get(); reference && !reference->As<RE::Actor>()) {
+                const auto formId = reference->GetFormID();
+                CanonicalKey key;
+                if (RuntimeFormToCanonical(formId, key)) {
+                    std::scoped_lock lock(g_stateMutex);
+                    g_recentActivation.reset();
+                    return formId;
+                }
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+            std::scoped_lock lock(g_stateMutex);
+            if (!g_recentActivation) return 0;
+
+            if (now - g_recentActivation->capturedAt > kPickupCorrelationWindow) {
+                g_recentActivation.reset();
+                return 0;
+            }
+
+            if (event->baseObj == 0 || g_recentActivation->baseObjectFormId != event->baseObj) {
+                return 0;
+            }
+
+            const auto formId = g_recentActivation->referenceFormId;
+            g_recentActivation.reset();
+            return formId;
+        }
+
         class WorldEventSink final :
             public RE::BSTEventSink<RE::TESOpenCloseEvent>,
             public RE::BSTEventSink<RE::TESActivateEvent>,
@@ -364,7 +432,15 @@ namespace SkyrimMP
                     g_applyingAuthoritative.load(std::memory_order_acquire)) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
-                const auto formId = event->objectActivated->GetFormID();
+
+                auto* activated = event->objectActivated.get();
+                if (!activated || activated->As<RE::Actor>()) {
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+
+                RememberActivation(activated);
+
+                const auto formId = activated->GetFormID();
                 if (auto* tasks = SKSE::GetTaskInterface()) {
                     tasks->AddTask([formId]() {
                         auto* form = RE::TESForm::LookupByID(formId);
@@ -389,12 +465,22 @@ namespace SkyrimMP
                     g_applyingAuthoritative.load(std::memory_order_acquire)) {
                     return RE::BSEventNotifyControl::kContinue;
                 }
-                auto reference = event->reference.get();
-                if (!reference || reference->As<RE::Actor>()) return RE::BSEventNotifyControl::kContinue;
+
+                const auto formId = ResolveWorldPickupReference(event);
+                if (formId == 0) {
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+
                 ReferenceState state;
                 state.enabled = false;
                 state.removed = true;
-                QueueObservation(reference->GetFormID(), state);
+                QueueObservation(formId, state);
+
+                logs::info(
+                    "[WORLD-STATE-PICKUP] correlated player pickup ref={:08X} base={:08X} count={}",
+                    formId,
+                    event->baseObj,
+                    event->itemCount);
                 return RE::BSEventNotifyControl::kContinue;
             }
 
@@ -615,6 +701,7 @@ namespace SkyrimMP
             std::scoped_lock lock(g_stateMutex);
             g_pending.clear();
             g_authoritative.clear();
+            g_recentActivation.reset();
         }
         g_running.store(true, std::memory_order_release);
         g_thread = std::jthread(Worker);
@@ -631,6 +718,7 @@ namespace SkyrimMP
             std::scoped_lock lock(g_stateMutex);
             g_pending.clear();
             g_authoritative.clear();
+            g_recentActivation.reset();
         }
     }
 }
