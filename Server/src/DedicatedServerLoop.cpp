@@ -2,6 +2,7 @@
 #include "NetworkTransport.h"
 #include "SessionProtocol.h"
 #include "PartyQuestManager.h"
+#include "WorldStateServer.h"
 #include "BuildInfo.h"
 
 #include <windows.h>
@@ -38,7 +39,7 @@ namespace SkyrimMP::Server
         std::uint32_t tickHz)
     {
         if (loadOrderRevision.empty()) throw std::runtime_error("live server loop requires load-order revision");
-        if (port == 0 || maxPlayers == 0 || tickHz == 0 || tickHz > 120) {
+        if (port == 0 || port == 65535 || maxPlayers == 0 || tickHz == 0 || tickHz > 120) {
             throw std::runtime_error("invalid live server configuration");
         }
 
@@ -52,6 +53,13 @@ namespace SkyrimMP::Server
         const auto restoredWorldActors = LoadRuntimeActorStates(registry, worldActorStatePath);
         std::cout << "[WORLD-ACTOR-STATE] restored=" << restoredWorldActors
                   << " path=" << worldActorStatePath.string() << '\n';
+
+        WorldStateServer worldState;
+        worldState.Start(
+            registry,
+            static_cast<std::uint16_t>(port + 1),
+            loadOrderRevision,
+            "server-data/world-references.state");
 
         g_stopRequested.store(false, std::memory_order_relaxed);
         SetConsoleCtrlHandler(ConsoleHandler, TRUE);
@@ -69,14 +77,16 @@ namespace SkyrimMP::Server
                   << " wireProtocol=" << BuildInfo::kWireProtocol
                   << " replicationProtocol=" << BuildInfo::kReplicationProtocol
                   << " listening=0.0.0.0:" << transport.BoundPort()
+                  << " worldState=0.0.0.0:" << worldState.BoundPort()
                   << " tickHz=" << tickHz
                   << " maxPlayers=" << maxPlayers
                   << " loadOrder=" << loadOrderRevision << '\n';
-        std::cout << "[LIVE] authority=server-player-entity interest=derived-from-authoritative-player\n";
+        std::cout << "[LIVE] authority=server-player-entity interest=derived-from-authoritative-player worldStateAuthority=server\n";
         std::cout << "[LIVE] Ctrl+C to stop dedicated server\n";
 
         while (!g_stopRequested.load(std::memory_order_relaxed)) {
             transport.PollOnce();
+            worldState.Poll();
             sessions.ProcessAcknowledgements(transport);
             sessions.ProcessAuthoritativeControlPackets(transport, registry);
             transport.PumpMaintenance(std::chrono::milliseconds(100), std::chrono::seconds(30));
@@ -92,6 +102,7 @@ namespace SkyrimMP::Server
             if (now >= nextStatus) {
                 const auto& t = transport.Stats();
                 const auto& s = sessions.Stats();
+                const auto& w = worldState.Stats();
                 std::cout << "[LIVE-STATUS] ticks=" << ticks
                           << " sessions=" << sessions.SessionCount()
                           << " players=" << sessions.ActivePlayerCount()
@@ -106,6 +117,12 @@ namespace SkyrimMP::Server
                           << " actorObserved=" << s.actorObservationsReceived
                           << " actorApplied=" << s.actorObservationsApplied
                           << " actorRejected=" << s.actorObservationsRejected
+                          << " worldClients=" << worldState.ClientCount()
+                          << " worldObserved=" << w.observationsReceived
+                          << " worldApplied=" << w.observationsApplied
+                          << " worldRejected=" << w.observationsRejected
+                          << " worldSnapshots=" << w.snapshotsSent
+                          << " worldPersisted=" << w.persistedStates
                           << " interestUpdates=" << s.interestUpdates
                           << " replicationFrames=" << s.replicationFrames
                           << " replicationMessages=" << s.replicationMessages
@@ -137,6 +154,9 @@ namespace SkyrimMP::Server
         sessions.FlushAuthoritativePlayers(registry);
         const auto savedWorldActors = SaveRuntimeActorStates(registry, worldActorStatePath);
         partyQuests.Save("server-data/party-quests.state");
+        const auto worldStats = worldState.Stats();
+        const auto worldClients = worldState.ClientCount();
+        worldState.Stop();
         std::cout << "[LIVE-STOP] ticks=" << ticks
                   << " sessions=" << sessions.SessionCount()
                   << " players=" << sessions.ActivePlayerCount()
@@ -150,6 +170,12 @@ namespace SkyrimMP::Server
                   << " actorObserved=" << sessions.Stats().actorObservationsReceived
                   << " actorApplied=" << sessions.Stats().actorObservationsApplied
                   << " actorRejected=" << sessions.Stats().actorObservationsRejected
+                  << " worldClients=" << worldClients
+                  << " worldObserved=" << worldStats.observationsReceived
+                  << " worldApplied=" << worldStats.observationsApplied
+                  << " worldRejected=" << worldStats.observationsRejected
+                  << " worldSnapshots=" << worldStats.snapshotsSent
+                  << " worldPersisted=" << worldStats.persistedStates
                   << " worldActorsSaved=" << savedWorldActors
                   << " replicationFrames=" << sessions.Stats().replicationFrames
                   << " replicationMessages=" << sessions.Stats().replicationMessages

@@ -7,6 +7,7 @@
 #include "MultiplayerUiRules.h"
 #include "ObjectLoadProbe.h"
 #include "WorldBootstrapManager.h"
+#include "WorldStateClient.h"
 #include "BuildInfo.h"
 
 namespace
@@ -118,8 +119,12 @@ namespace
         SkyrimMP::MainThreadHook::ResetActorCache();
         SkyrimMP::GameplayEventProbe::Reset();
         SkyrimMP::MultiplayerUiRules::SetActive(true);
-        if (g_networkStarted) SkyrimMP::ClientNetwork::Stop();
+        if (g_networkStarted) {
+            SkyrimMP::ClientNetwork::Stop();
+            SkyrimMP::WorldStateClient::Stop();
+        }
         SkyrimMP::ClientNetwork::Start();
+        SkyrimMP::WorldStateClient::Start();
         g_networkStarted = true;
     }
 
@@ -184,6 +189,7 @@ namespace
                 SkyrimMP::GameplayEventProbe::Reset();
                 if (g_networkStarted) {
                     SkyrimMP::ClientNetwork::Stop();
+                    SkyrimMP::WorldStateClient::Stop();
                     g_networkStarted = false;
                 }
                 logs::info("[ALPHA {}] ordinary new game remains single-player until explicitly launched for character creation", SkyrimMP::BuildInfo::kVersion);
