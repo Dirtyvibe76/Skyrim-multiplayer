@@ -5,6 +5,7 @@
 #include "PlayerState.h"
 #include "WorldReferenceDatabase.h"
 #include "WorldSpatialContext.h"
+#include "WorldEntityId.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -16,7 +17,7 @@ namespace SkyrimMP::Server
 {
     struct ImportedQuestDatabase;
     struct ServerQuestProgramDatabase;
-    using NetworkEntityId = std::uint64_t;
+    using NetworkEntityId = WorldEntityId;
 
     enum class RuntimeEntityKind : std::uint8_t
     {
@@ -64,7 +65,7 @@ namespace SkyrimMP::Server
         std::unordered_map<CanonicalRecordKey, NetworkEntityId, CanonicalRecordKeyHash> sourceToNetwork;
         std::unordered_map<CanonicalRecordKey, std::vector<NetworkEntityId>, CanonicalRecordKeyHash> interiorCells;
         std::unordered_map<ExteriorInterestBucketKey, std::vector<NetworkEntityId>, ExteriorInterestBucketKeyHash> exteriorBuckets;
-        NetworkEntityId nextDynamicId{ 1ull << 63 };
+        NetworkEntityId nextDynamicId{ kDynamicWorldEntityBit };
         std::uint64_t staticEntities{};
         std::uint64_t actors{};
         std::uint64_t references{};

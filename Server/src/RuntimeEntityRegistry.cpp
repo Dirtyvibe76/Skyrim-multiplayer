@@ -74,8 +74,10 @@ namespace SkyrimMP::Server
 
         NetworkEntityId StaticNetworkId(const CanonicalRecordKey& key)
         {
-            const std::uint64_t light = key.kind == FormNamespaceKind::Light ? 1ull : 0ull;
-            return 1ull + (light << 62) + (static_cast<std::uint64_t>(key.namespaceIndex) << 32) + key.localId;
+            return MakeStaticWorldEntityId(
+                key.kind == FormNamespaceKind::Light,
+                key.namespaceIndex,
+                key.localId);
         }
     }
 

@@ -17,6 +17,11 @@ Server-authoritative Skyrim multiplayer project.
 The server owns authoritative multiplayer state.
 Clients provide input, rendering, local prediction, and engine integration.
 
+Every replicated object has a stable `WorldEntityId`. On each client that ID is
+bound to the native Skyrim object that represents it (`TESNPC`, `Actor`, or
+`TESObjectREFR`). Multiplayer state is applied to those native objects on the
+game thread; SkyrimMP does not maintain a parallel renderer or actor model.
+
 ## Dedicated server
 
 Build the server from the repository root:
@@ -83,6 +88,10 @@ SE/AE with SKSE64:
 - Persistent server-owned character location across reconnects and restarts.
 - Duplicate-character login rejection to protect MP save ownership.
 - Reliable session/bootstrap traffic and interest-based entity replication.
+- A central client `WorldEntityId` registry now binds server identities to
+  native Skyrim references. Static world references and runtime-created remote
+  players share this identity path, reject collisions/remaps, and resolve via
+  `ObjectRefHandle` where appropriate.
 - Server-authoritative nearby NPC transform observation with deterministic
   observer selection, game-thread client reconciliation, bounded/coalesced
   client queues, and persistent actor state across reconnects and dedicated

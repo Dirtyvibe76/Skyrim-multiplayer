@@ -19,7 +19,7 @@ namespace SkyrimMP::Server
         using namespace std::chrono_literals;
 
         constexpr std::uint32_t kWorldMagic = 0x31535753u; // "SWS1"
-        constexpr std::uint16_t kWorldProtocol = 1;
+        constexpr std::uint16_t kWorldProtocol = 2;
         constexpr std::size_t kMaxDatagram = 1200;
 
         enum class WorldPacketKind : std::uint8_t
@@ -140,10 +140,12 @@ namespace SkyrimMP::Server
         }
 
         std::vector<std::uint8_t> MakeSnapshot(
+            WorldEntityId entityId,
             const CanonicalRecordKey& source,
             const PersistedReferenceState& state)
         {
             std::vector<std::uint8_t> payload;
+            Append(payload, entityId);
             AppendKey(payload, source);
             Append(payload, state.revision);
             Append(payload, EncodeState(state.state));
@@ -197,7 +199,9 @@ namespace SkyrimMP::Server
 
         void SendSnapshot(const sockaddr_in& peer, const CanonicalRecordKey& source, const PersistedReferenceState& state)
         {
-            Send(peer, MakeSnapshot(source, state));
+            const auto sourceIt = registry->sourceToNetwork.find(source);
+            if (sourceIt == registry->sourceToNetwork.end()) return;
+            Send(peer, MakeSnapshot(sourceIt->second, source, state));
             ++stats.snapshotsSent;
         }
 
@@ -399,9 +403,12 @@ namespace SkyrimMP::Server
                 }
 
                 ++impl_->stats.observationsReceived;
+                const auto entityId = Read<WorldEntityId>(bytes, offset);
                 const auto source = ReadKey(bytes, offset);
                 const auto state = DecodeState(Read<std::uint8_t>(bytes, offset));
-                if (offset != bytes.size() || !impl_->ValidSource(source)) {
+                const auto sourceIt = impl_->registry->sourceToNetwork.find(source);
+                if (offset != bytes.size() || !impl_->ValidSource(source) ||
+                    sourceIt == impl_->registry->sourceToNetwork.end() || sourceIt->second != entityId) {
                     ++impl_->stats.observationsRejected;
                     continue;
                 }

@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "RemotePlayerProxyManager.h"
+#include "NativeEntityRegistry.h"
 
 #include <algorithm>
 #include <deque>
@@ -55,7 +56,7 @@ namespace SkyrimMP
 
         bool IsDynamicPlayerEntity(std::uint64_t id)
         {
-            return (id & (1ull << 63)) != 0;
+            return IsDynamicWorldEntity(id);
         }
 
         void QueueLocked(ProxyCommand command)
@@ -313,6 +314,7 @@ namespace SkyrimMP
             if (it == g_proxies.end()) return;
             NativeProxy proxy = std::move(it->second);
             g_proxies.erase(it);
+            NativeEntityRegistry::Unbind(networkEntityId);
             QuarantineProxy(networkEntityId, std::move(proxy), reason);
         }
 
@@ -377,6 +379,13 @@ namespace SkyrimMP
                 orphan.handle = actor->GetHandle();
                 orphan.dynamicBase = avatarBase;
                 QuarantineProxy(networkEntityId, std::move(orphan), "duplicate native create");
+                return false;
+            }
+
+            if (!NativeEntityRegistry::BindRuntime(networkEntityId, *actor, NativeEntityKind::RemotePlayer)) {
+                NativeProxy rejected = std::move(proxyIt->second);
+                g_proxies.erase(proxyIt);
+                QuarantineProxy(networkEntityId, std::move(rejected), "native entity binding rejected");
                 return false;
             }
 

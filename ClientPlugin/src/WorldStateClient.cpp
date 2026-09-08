@@ -1,6 +1,8 @@
 #include "pch.h"
 
 #include "WorldStateClient.h"
+#include "NativeEntityRegistry.h"
+#include "WorldEntityId.h"
 
 #include <algorithm>
 #include <bit>
@@ -20,7 +22,7 @@ namespace SkyrimMP
         using namespace std::chrono_literals;
 
         constexpr std::uint32_t kWorldMagic = 0x31535753u; // "SWS1"
-        constexpr std::uint16_t kWorldProtocol = 1;
+        constexpr std::uint16_t kWorldProtocol = 2;
         constexpr auto kLoadOrderRevision = "7dc35a831945468b790a6b3398236c0fe9fe7c8b32425be9ef07ca1434d6c808";
         constexpr std::size_t kMaxDatagram = 1200;
         constexpr auto kPickupCorrelationWindow = 5s;
@@ -59,6 +61,7 @@ namespace SkyrimMP
         {
             ReferenceState state;
             std::uint64_t revision{};
+            std::uint32_t runtimeFormId{};
         };
 
         struct RecentActivation
@@ -80,7 +83,7 @@ namespace SkyrimMP
         std::jthread g_thread;
         std::mutex g_stateMutex;
         std::unordered_map<std::uint32_t, PendingObservation> g_pending;
-        std::unordered_map<std::uint32_t, AuthoritativeState> g_authoritative;
+        std::unordered_map<WorldEntityId, AuthoritativeState> g_authoritative;
         std::optional<RecentActivation> g_recentActivation;
 
         std::string Trim(std::string value)
@@ -183,6 +186,11 @@ namespace SkyrimMP
             return (key.namespaceIndex << 24) | key.localId;
         }
 
+        WorldEntityId StaticWorldEntityId(const CanonicalKey& key)
+        {
+            return MakeStaticWorldEntityId(key.light, key.namespaceIndex, key.localId);
+        }
+
         std::uint8_t EncodeState(const ReferenceState& state)
         {
             std::uint8_t flags = 0;
@@ -240,6 +248,7 @@ namespace SkyrimMP
             CanonicalKey key;
             if (!RuntimeFormToCanonical(runtimeFormId, key)) return {};
             std::vector<std::uint8_t> payload;
+            Append(payload, StaticWorldEntityId(key));
             AppendKey(payload, key);
             Append(payload, EncodeState(state));
             return MakePacket(WorldPacketKind::Observation, payload);
@@ -273,11 +282,11 @@ namespace SkyrimMP
             return true;
         }
 
-        void ApplyReferenceState(std::uint32_t formId, ReferenceState state, std::uint64_t revision)
+        void ApplyReferenceState(WorldEntityId entityId, ReferenceState state, std::uint64_t revision)
         {
-            auto* form = RE::TESForm::LookupByID(formId);
-            auto* reference = form ? form->As<RE::TESObjectREFR>() : nullptr;
+            auto* reference = NativeEntityRegistry::Resolve(entityId);
             if (!reference || reference->As<RE::Actor>()) return;
+            const auto formId = reference->GetFormID();
 
             g_applyingAuthoritative.store(true, std::memory_order_release);
             if (state.removed || !state.enabled) {
@@ -292,7 +301,8 @@ namespace SkyrimMP
             }
             g_applyingAuthoritative.store(false, std::memory_order_release);
             logs::info(
-                "[WORLD-STATE-APPLY] form={:08X} revision={} enabled={} openKnown={} open={} removed={}",
+                "[WORLD-STATE-APPLY] worldEntity={:016X} form={:08X} revision={} enabled={} openKnown={} open={} removed={}",
+                entityId,
                 formId,
                 revision,
                 state.enabled,
@@ -301,18 +311,18 @@ namespace SkyrimMP
                 state.removed);
         }
 
-        void ScheduleApply(std::uint32_t formId)
+        void ScheduleApply(WorldEntityId entityId)
         {
             AuthoritativeState authoritative;
             {
                 std::scoped_lock lock(g_stateMutex);
-                const auto it = g_authoritative.find(formId);
+                const auto it = g_authoritative.find(entityId);
                 if (it == g_authoritative.end()) return;
                 authoritative = it->second;
             }
             if (auto* tasks = SKSE::GetTaskInterface()) {
-                tasks->AddTask([formId, authoritative]() {
-                    ApplyReferenceState(formId, authoritative.state, authoritative.revision);
+                tasks->AddTask([entityId, authoritative]() {
+                    ApplyReferenceState(entityId, authoritative.state, authoritative.revision);
                 });
             }
         }
@@ -490,7 +500,8 @@ namespace SkyrimMP
             {
                 if (!event || event->formID == 0) return RE::BSEventNotifyControl::kContinue;
                 if (event->loaded) {
-                    ScheduleApply(event->formID);
+                    const auto entityId = NativeEntityRegistry::FindByRuntimeFormId(event->formID);
+                    if (entityId != 0) ScheduleApply(entityId);
                 } else if (!g_applyingAuthoritative.load(std::memory_order_acquire)) {
                     const auto formId = event->formID;
                     if (auto* tasks = SKSE::GetTaskInterface()) {
@@ -656,19 +667,21 @@ namespace SkyrimMP
                             throw std::runtime_error("unexpected world-state packet kind");
                         }
 
+                        const auto entityId = Read<WorldEntityId>(bytes, offset);
                         const auto key = ReadKey(bytes, offset);
                         const auto revision = Read<std::uint64_t>(bytes, offset);
                         const auto state = DecodeState(Read<std::uint8_t>(bytes, offset));
                         if (offset != bytes.size() || revision == 0) throw std::runtime_error("world-state snapshot invalid");
                         const auto runtimeFormId = CanonicalToRuntimeForm(key);
-                        if (runtimeFormId == 0) continue;
+                        if (runtimeFormId == 0 || entityId != StaticWorldEntityId(key) ||
+                            !NativeEntityRegistry::BindStatic(entityId, runtimeFormId)) continue;
 
                         bool apply = false;
                         {
                             std::scoped_lock lock(g_stateMutex);
-                            const auto existing = g_authoritative.find(runtimeFormId);
+                            const auto existing = g_authoritative.find(entityId);
                             if (existing == g_authoritative.end() || revision > existing->second.revision) {
-                                g_authoritative[runtimeFormId] = AuthoritativeState{ state, revision };
+                                g_authoritative[entityId] = AuthoritativeState{ state, revision, runtimeFormId };
                                 apply = true;
                             }
                             const auto pending = g_pending.find(runtimeFormId);
@@ -676,7 +689,7 @@ namespace SkyrimMP
                                 g_pending.erase(pending);
                             }
                         }
-                        if (apply) ScheduleApply(runtimeFormId);
+                        if (apply) ScheduleApply(entityId);
                     } catch (const std::exception& error) {
                         logs::warn("[WORLD-STATE] discarded packet reason={}", error.what());
                     }
@@ -702,6 +715,7 @@ namespace SkyrimMP
             g_pending.clear();
             g_authoritative.clear();
             g_recentActivation.reset();
+            NativeEntityRegistry::ResetStatic();
         }
         g_running.store(true, std::memory_order_release);
         g_thread = std::jthread(Worker);
@@ -719,6 +733,7 @@ namespace SkyrimMP
             g_pending.clear();
             g_authoritative.clear();
             g_recentActivation.reset();
+            NativeEntityRegistry::ResetStatic();
         }
     }
 }
