@@ -40,6 +40,7 @@ namespace SkyrimMP
             std::uint64_t appearanceRevision{};
             std::uint32_t cellFormId{};
             std::uint32_t worldspaceFormId{};
+            std::vector<std::uint32_t> equippedFormIds;
         };
 
         std::mutex g_mutex;
@@ -73,17 +74,23 @@ namespace SkyrimMP
                     return;
                 }
                 if (existing->second.kind == ProxyCommandKind::Despawn) return;
+
                 if (command.kind == ProxyCommandKind::Appearance) {
-                    // Appearance must not be lost behind a transform upsert. Cache
-                    // it immediately; the queued transform can then consume it.
-                    const auto appearanceIt = g_appearances.find(command.networkEntityId);
-                    if (appearanceIt == g_appearances.end() || command.appearance.revision >= appearanceIt->second.revision) {
-                        g_appearances[command.networkEntityId] = command.appearance;
+                    if (!existing->second.appearance.valid ||
+                        command.appearance.revision >= existing->second.appearance.revision) {
+                        existing->second.appearance = command.appearance;
                     }
                     return;
                 }
-                if (existing->second.kind == ProxyCommandKind::Appearance ||
-                    command.update.revision >= existing->second.update.revision) {
+
+                if (existing->second.kind == ProxyCommandKind::Appearance) {
+                    command.appearance = existing->second.appearance;
+                    existing->second = std::move(command);
+                    return;
+                }
+
+                if (command.update.revision >= existing->second.update.revision) {
+                    command.appearance = existing->second.appearance;
                     existing->second = std::move(command);
                 }
                 return;
@@ -251,6 +258,10 @@ namespace SkyrimMP
                 return nullptr;
             }
 
+            // The race preset is only a safe native construction template.
+            // Never inherit its clothing as the remote player's appearance.
+            duplicate->defaultOutfit = nullptr;
+            duplicate->sleepOutfit = nullptr;
             duplicate->SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kNoActivation, true, false);
             duplicate->SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kIsGhost, true, false);
             duplicate->SetActorBaseFlag(RE::ACTOR_BASE_DATA::Flag::kInvulnerable, true, false);
@@ -279,6 +290,56 @@ namespace SkyrimMP
             actor.data.angle.y = update.rotation.y;
             actor.data.angle.z = update.rotation.z;
             actor.Update3DPosition(true);
+        }
+
+        bool IsVisualEquipment(const RE::TESBoundObject& object)
+        {
+            switch (object.GetFormType()) {
+            case RE::FormType::Armor:
+            case RE::FormType::Weapon:
+            case RE::FormType::Ammo:
+            case RE::FormType::Light:
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        void ApplyEquipment(
+            RE::Actor& actor,
+            NativeProxy& proxy,
+            const std::vector<std::uint32_t>& equippedFormIds,
+            std::uint64_t networkEntityId)
+        {
+            if (proxy.equippedFormIds == equippedFormIds) return;
+            auto* equipManager = RE::ActorEquipManager::GetSingleton();
+            if (!equipManager) return;
+
+            for (const auto formId : proxy.equippedFormIds) {
+                if (std::find(equippedFormIds.begin(), equippedFormIds.end(), formId) != equippedFormIds.end()) continue;
+                auto* object = RE::TESForm::LookupByID<RE::TESBoundObject>(formId);
+                if (!object || !IsVisualEquipment(*object)) continue;
+                equipManager->UnequipObject(&actor, object, nullptr, 1, nullptr, false, true, false, true);
+                actor.RemoveItem(object, 1, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+            }
+
+            for (const auto formId : equippedFormIds) {
+                if (std::find(proxy.equippedFormIds.begin(), proxy.equippedFormIds.end(), formId) != proxy.equippedFormIds.end()) continue;
+                auto* object = RE::TESForm::LookupByID<RE::TESBoundObject>(formId);
+                if (!object || !IsVisualEquipment(*object)) {
+                    logs::debug("[REMOTE PLAYER EQUIPMENT SKIP] networkId={:016X} form={:08X}", networkEntityId, formId);
+                    continue;
+                }
+                actor.AddObjectToContainer(object, nullptr, 1, nullptr);
+                equipManager->EquipObject(&actor, object, nullptr, 1, nullptr, false, true, false, true);
+            }
+
+            proxy.equippedFormIds = equippedFormIds;
+            logs::info(
+                "[REMOTE PLAYER EQUIPMENT] networkId={:016X} form={:08X} items={}",
+                networkEntityId,
+                actor.GetFormID(),
+                proxy.equippedFormIds.size());
         }
 
         void QuarantineProxy(std::uint64_t networkEntityId, NativeProxy proxy, const char* reason)
@@ -412,6 +473,7 @@ namespace SkyrimMP
                 return true;
             }
 
+            ApplyEquipment(*actor, proxyIt->second, update.equippedFormIds, networkEntityId);
             proxyIt->second.initialized = true;
             InitializeVisualOnlyProxy(*actor, networkEntityId, avatarBase->GetFormID());
             return true;
@@ -498,6 +560,7 @@ namespace SkyrimMP
                 InitializeVisualOnlyProxy(*actor, update.networkEntityId, baseFormId);
             }
 
+            ApplyEquipment(*actor, proxy, update.equippedFormIds, update.networkEntityId);
             proxy.lastRevision = update.revision;
             ApplyTransform(*actor, update);
         }
@@ -565,6 +628,9 @@ namespace SkyrimMP
                 ApplyAppearance(command.networkEntityId, command.appearance);
                 ++applied;
                 continue;
+            }
+            if (command.appearance.valid) {
+                ApplyAppearance(command.networkEntityId, command.appearance);
             }
             ApplyUpsert(command.update);
             ++applied;

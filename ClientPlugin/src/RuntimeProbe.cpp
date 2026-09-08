@@ -68,6 +68,40 @@ namespace SkyrimMP
             return hash == 0 ? 1 : hash;
         }
 
+        std::vector<std::uint32_t> CaptureEquippedFormIds(RE::PlayerCharacter& player)
+        {
+            using namespace std::chrono_literals;
+            static auto lastScan = std::chrono::steady_clock::time_point{};
+            static std::vector<std::uint32_t> cached;
+            const auto now = std::chrono::steady_clock::now();
+            if (lastScan.time_since_epoch().count() != 0 && now - lastScan < 500ms) return cached;
+
+            std::vector<std::uint32_t> equipped;
+            const auto inventory = player.GetInventory([](RE::TESBoundObject& object) {
+                switch (object.GetFormType()) {
+                case RE::FormType::Armor:
+                case RE::FormType::Weapon:
+                case RE::FormType::Ammo:
+                case RE::FormType::Light:
+                    return true;
+                default:
+                    return false;
+                }
+            });
+
+            for (const auto& [object, entry] : inventory) {
+                if (!object || entry.first <= 0 || !entry.second) continue;
+                if (!entry.second->IsWorn() && !entry.second->IsWorn(true)) continue;
+                equipped.push_back(object->GetFormID());
+            }
+            std::sort(equipped.begin(), equipped.end());
+            equipped.erase(std::unique(equipped.begin(), equipped.end()), equipped.end());
+            if (equipped.size() > 32) equipped.resize(32);
+            cached = equipped;
+            lastScan = now;
+            return cached;
+        }
+
         PlayerAppearance CaptureAppearance(RE::PlayerCharacter& player)
         {
             PlayerAppearance appearance;
@@ -156,7 +190,7 @@ namespace SkyrimMP
         state.dead = gameplay.dead;
         state.inCombat = gameplay.inCombat;
         state.hasStatusState = gameplay.valid;
-        state.hasEquipmentState = gameplay.equipmentValid;
+        state.hasEquipmentState = true;
         if (player->IsWeaponDrawn()) state.actionFlags |= kWeaponDrawn;
         if (player->IsMoving()) state.actionFlags |= kMoving;
         if (player->IsRunning()) state.actionFlags |= kRunning;
@@ -167,7 +201,7 @@ namespace SkyrimMP
         if (player->IsBlocking()) state.actionFlags |= kBlocking;
         bool casting = false;
         if (player->GetGraphVariableBool("IsCasting", casting) && casting) state.actionFlags |= kCasting;
-        state.equippedFormIds = gameplay.equippedFormIds;
+        state.equippedFormIds = CaptureEquippedFormIds(*player);
         return state;
     }
 
