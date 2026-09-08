@@ -387,7 +387,8 @@ namespace SkyrimMP::Server
             std::uint64_t sessionId,
             NetworkEntityId playerEntityId,
             const CanonicalRecordKey& anchor,
-            const RuntimeEntityState& player)
+            const RuntimeEntityState& player,
+            bool firstLogin)
         {
             std::vector<std::uint8_t> out;
             AppendIntegral(out, static_cast<std::uint8_t>(SessionControlKind::WorldBootstrap));
@@ -399,6 +400,7 @@ namespace SkyrimMP::Server
             if (player.location.exterior) flags |= 0x01;
             if (player.location.hasCell) flags |= 0x02;
             if (player.location.hasWorldspace) flags |= 0x04;
+            if (firstLogin) flags |= 0x08;
             AppendIntegral(out, flags);
             AppendKey(out, player.location.cell);
             AppendKey(out, player.location.worldspace);
@@ -860,7 +862,8 @@ namespace SkyrimMP::Server
                             session.sessionId,
                             session.playerEntityId,
                             session.bootstrapAnchor,
-                            playerIt->second));
+                            playerIt->second,
+                            session.firstLogin));
                     ++stats_.bootstrapAssignments;
 
                     // Couple profile delivery to bootstrap/spawn without putting

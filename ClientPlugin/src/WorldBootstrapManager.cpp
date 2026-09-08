@@ -22,6 +22,7 @@ namespace SkyrimMP
         bool g_characterCreatorClosed{};
         std::uint32_t g_characterCreatorAttempts{};
         std::chrono::steady_clock::time_point g_lastCharacterCreatorRequest{};
+        std::chrono::steady_clock::time_point g_characterCreatorClosedAt{};
         std::chrono::steady_clock::time_point g_worldContextReadyAt{};
         std::string g_characterCreatorBaselineName;
         std::uint32_t g_characterCreatorBaselineRace{};
@@ -132,6 +133,10 @@ namespace SkyrimMP
             if (ui && ui->IsMenuOpen(RE::RaceSexMenu::MENU_NAME)) return false;
 
             if (g_characterCreatorClosed) {
+                if (g_characterCreatorClosedAt.time_since_epoch().count() == 0 ||
+                    now - g_characterCreatorClosedAt < std::chrono::milliseconds(750)) {
+                    return false;
+                }
                 logs::info("[MP CHARACTER CREATE] RaceSex Menu closed; multiplayer appearance accepted");
                 return true;
             }
@@ -148,6 +153,7 @@ namespace SkyrimMP
             logs::info("[MP CHARACTER CREATE] RaceSex Menu open; waiting for player confirmation");
         } else if (g_characterCreatorObservedOpen) {
             g_characterCreatorClosed = true;
+            g_characterCreatorClosedAt = std::chrono::steady_clock::now();
             logs::info("[MP CHARACTER CREATE] RaceSex Menu close event received");
         }
     }
@@ -251,13 +257,13 @@ namespace SkyrimMP
         // First-login character creation is intentionally NOT a replication
         // gate. The dedicated server, heartbeat, Interest updates and remote
         // player replication remain live while this UI is open.
-        if (bootstrap.anchorRuntimeFormId != 0 && !CompleteFirstLoginCharacterCreation(*player)) {
+        if (bootstrap.firstLogin && !CompleteFirstLoginCharacterCreation(*player)) {
             return 0;
         }
 
         const auto observed = player->GetPosition();
 
-        if (bootstrap.anchorRuntimeFormId != 0) {
+        if (bootstrap.firstLogin) {
             if (auto* saves = RE::BGSSaveLoadManager::GetSingleton()) {
                 char branchName[64]{};
                 const auto& launch = GetMultiplayerLaunchConfig();

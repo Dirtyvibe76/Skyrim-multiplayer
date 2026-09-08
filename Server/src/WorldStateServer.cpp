@@ -4,9 +4,13 @@
 #include "WorldStateServer.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <fstream>
+#include <cmath>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
@@ -19,7 +23,7 @@ namespace SkyrimMP::Server
         using namespace std::chrono_literals;
 
         constexpr std::uint32_t kWorldMagic = 0x31535753u; // "SWS1"
-        constexpr std::uint16_t kWorldProtocol = 2;
+        constexpr std::uint16_t kWorldProtocol = 3;
         constexpr std::size_t kMaxDatagram = 1200;
 
         enum class WorldPacketKind : std::uint8_t
@@ -28,7 +32,10 @@ namespace SkyrimMP::Server
             Welcome = 2,
             Observation = 3,
             Snapshot = 4,
-            Reject = 5
+            Reject = 5,
+            DropRequest = 6,
+            DropSnapshot = 7,
+            RemoveDynamic = 8
         };
 
         struct ReferenceState
@@ -43,6 +50,19 @@ namespace SkyrimMP::Server
         {
             ReferenceState state;
             std::uint64_t revision{};
+        };
+
+        struct DynamicDropState
+        {
+            WorldEntityId id{};
+            std::uint64_t originRequestId{};
+            std::uint64_t acceptedPickupRequestId{};
+            CanonicalRecordKey baseObject;
+            WorldTransform transform;
+            RuntimeEntityLocation location;
+            std::uint16_t count{ 1 };
+            std::uint64_t revision{ 1 };
+            bool removed{};
         };
 
         struct ClientPeer
@@ -151,6 +171,36 @@ namespace SkyrimMP::Server
             Append(payload, EncodeState(state.state));
             return MakePacket(WorldPacketKind::Snapshot, payload);
         }
+
+        std::vector<std::uint8_t> MakeDropSnapshot(
+            std::uint64_t requestId,
+            const DynamicDropState& drop,
+            bool pickupAccepted = false)
+        {
+            std::vector<std::uint8_t> payload;
+            Append(payload, requestId);
+            Append(payload, drop.id);
+            AppendKey(payload, drop.baseObject);
+            std::uint8_t flags = 0;
+            if (drop.location.exterior) flags |= 0x01;
+            if (drop.location.hasCell) flags |= 0x02;
+            if (drop.location.hasWorldspace) flags |= 0x04;
+            if (drop.removed) flags |= 0x08;
+            if (pickupAccepted) flags |= 0x10;
+            Append(payload, flags);
+            AppendKey(payload, drop.location.cell);
+            AppendKey(payload, drop.location.worldspace);
+            const auto appendFloat = [&](float value) { Append(payload, std::bit_cast<std::uint32_t>(value)); };
+            appendFloat(drop.transform.x);
+            appendFloat(drop.transform.y);
+            appendFloat(drop.transform.z);
+            appendFloat(drop.transform.pitch);
+            appendFloat(drop.transform.yaw);
+            appendFloat(drop.transform.roll);
+            Append(payload, drop.count);
+            Append(payload, drop.revision);
+            return MakePacket(WorldPacketKind::DropSnapshot, payload);
+        }
     }
 
     struct WorldStateServer::Impl
@@ -162,6 +212,8 @@ namespace SkyrimMP::Server
         std::string loadOrderRevision;
         std::filesystem::path statePath;
         std::unordered_map<CanonicalRecordKey, PersistedReferenceState, CanonicalRecordKeyHash> states;
+        std::unordered_map<WorldEntityId, DynamicDropState> dynamicDrops;
+        std::unordered_map<std::uint64_t, WorldEntityId> dropRequests;
         std::unordered_map<std::uint64_t, ClientPeer> clients;
         WorldStateServerStats stats;
 
@@ -211,6 +263,144 @@ namespace SkyrimMP::Server
                 (void)key;
                 SendSnapshot(peer.address, source, state);
             }
+        }
+
+        void SendDropSnapshot(
+            const sockaddr_in& peer,
+            std::uint64_t requestId,
+            const DynamicDropState& drop,
+            bool pickupAccepted = false)
+        {
+            Send(peer, MakeDropSnapshot(requestId, drop, pickupAccepted));
+            ++stats.snapshotsSent;
+        }
+
+        void BroadcastDropSnapshot(
+            const DynamicDropState& drop,
+            std::uint64_t requestId = 0,
+            std::uint64_t requestPeer = 0,
+            bool requestPickupAccepted = false)
+        {
+            for (const auto& [key, peer] : clients) {
+                const bool requester = key == requestPeer;
+                SendDropSnapshot(
+                    peer.address,
+                    requester ? requestId : 0,
+                    drop,
+                    requester && requestPickupAccepted);
+            }
+        }
+
+        std::filesystem::path DropStatePath() const
+        {
+            return statePath.string() + ".drops";
+        }
+
+        void SaveDrops()
+        {
+            if (statePath.empty()) return;
+            const auto path = DropStatePath();
+            const auto parent = path.parent_path();
+            if (!parent.empty()) std::filesystem::create_directories(parent);
+            const auto temporary = path.string() + ".tmp";
+            std::vector<DynamicDropState> ordered;
+            ordered.reserve(dynamicDrops.size());
+            for (const auto& [id, drop] : dynamicDrops) {
+                (void)id;
+                ordered.push_back(drop);
+            }
+            std::sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) { return left.id < right.id; });
+            {
+                std::ofstream output(temporary, std::ios::trunc);
+                if (!output) throw std::runtime_error("failed to open dynamic-drop temporary file");
+                output << "SKYRIMMP_DYNAMIC_DROPS 3\n" << std::setprecision(std::numeric_limits<float>::max_digits10);
+                for (const auto& drop : ordered) {
+                    output << drop.id << ' '
+                           << (drop.baseObject.kind == FormNamespaceKind::Light ? 1 : 0) << ' '
+                           << drop.baseObject.namespaceIndex << ' ' << drop.baseObject.localId << ' '
+                           << drop.transform.x << ' ' << drop.transform.y << ' ' << drop.transform.z << ' '
+                           << drop.transform.pitch << ' ' << drop.transform.yaw << ' ' << drop.transform.roll << ' '
+                           << (drop.location.exterior ? 1 : 0) << ' '
+                           << (drop.location.cell.kind == FormNamespaceKind::Light ? 1 : 0) << ' '
+                           << drop.location.cell.namespaceIndex << ' ' << drop.location.cell.localId << ' '
+                           << (drop.location.hasWorldspace ? 1 : 0) << ' '
+                           << (drop.location.worldspace.kind == FormNamespaceKind::Light ? 1 : 0) << ' '
+                           << drop.location.worldspace.namespaceIndex << ' ' << drop.location.worldspace.localId << ' '
+                           << drop.count << ' ' << drop.revision << ' '
+                           << drop.originRequestId << ' ' << drop.acceptedPickupRequestId << ' '
+                           << (drop.removed ? 1 : 0) << '\n';
+                }
+                if (!output) throw std::runtime_error("failed to write dynamic-drop temporary file");
+            }
+            std::error_code error;
+            std::filesystem::remove(path, error);
+            error.clear();
+            std::filesystem::rename(temporary, path, error);
+            if (error) throw std::runtime_error("failed to commit dynamic-drop state: " + error.message());
+            stats.dynamicDropsPersisted = ordered.size();
+        }
+
+        std::size_t LoadDrops()
+        {
+            dynamicDrops.clear();
+            dropRequests.clear();
+            std::ifstream input(DropStatePath());
+            if (!input) return 0;
+            std::string magic;
+            unsigned version{};
+            if (!(input >> magic >> version) || magic != "SKYRIMMP_DYNAMIC_DROPS" ||
+                (version != 1 && version != 2 && version != 3)) {
+                throw std::runtime_error("persisted dynamic-drop header is malformed");
+            }
+            std::size_t restored{};
+            while (true) {
+                DynamicDropState drop;
+                unsigned baseKind{}, exterior{}, cellKind{}, hasWorld{}, worldKind{}, count{}, removed{};
+                if (!(input >> drop.id)) {
+                    if (input.eof()) break;
+                    throw std::runtime_error("persisted dynamic-drop state is malformed");
+                }
+                if (!(input >> baseKind >> drop.baseObject.namespaceIndex >> drop.baseObject.localId
+                    >> drop.transform.x >> drop.transform.y >> drop.transform.z
+                    >> drop.transform.pitch >> drop.transform.yaw >> drop.transform.roll
+                    >> exterior >> cellKind >> drop.location.cell.namespaceIndex >> drop.location.cell.localId
+                    >> hasWorld >> worldKind >> drop.location.worldspace.namespaceIndex >> drop.location.worldspace.localId
+                    >> count >> drop.revision) || baseKind > 1 || cellKind > 1 || worldKind > 1 ||
+                    exterior > 1 || hasWorld > 1 || count == 0 || count > 32767 || drop.revision == 0) {
+                    throw std::runtime_error("persisted dynamic-drop record is malformed");
+                }
+                if (version == 2) {
+                    if (!(input >> drop.originRequestId >> removed) || removed > 1) {
+                        throw std::runtime_error("persisted dynamic-drop transaction is malformed");
+                    }
+                    drop.removed = removed != 0;
+                } else if (version >= 3) {
+                    if (!(input >> drop.originRequestId >> drop.acceptedPickupRequestId >> removed) || removed > 1) {
+                        throw std::runtime_error("persisted dynamic-drop transaction is malformed");
+                    }
+                    drop.removed = removed != 0;
+                    if (!drop.removed && drop.acceptedPickupRequestId != 0) {
+                        throw std::runtime_error("active dynamic drop has accepted pickup transaction");
+                    }
+                }
+                drop.baseObject.kind = baseKind ? FormNamespaceKind::Light : FormNamespaceKind::Full;
+                drop.location.cell.kind = cellKind ? FormNamespaceKind::Light : FormNamespaceKind::Full;
+                drop.location.worldspace.kind = worldKind ? FormNamespaceKind::Light : FormNamespaceKind::Full;
+                drop.location.exterior = exterior != 0;
+                drop.location.hasCell = true;
+                drop.location.hasWorldspace = hasWorld != 0;
+                drop.count = static_cast<std::uint16_t>(count);
+                if (!registry->validItemBaseRecords.contains(drop.baseObject) ||
+                    drop.id == (std::numeric_limits<WorldEntityId>::max)()) continue;
+                if (!drop.removed &&
+                    !RestoreRuntimeEntity(*registry, drop.id, RuntimeEntityKind::StaticReference, drop.transform, drop.location)) continue;
+                registry->nextDynamicId = (std::max)(registry->nextDynamicId, drop.id + 1);
+                dynamicDrops.emplace(drop.id, drop);
+                if (drop.originRequestId != 0) dropRequests.emplace(drop.originRequestId, drop.id);
+                if (!drop.removed) ++restored;
+            }
+            stats.dynamicDropsPersisted = restored;
+            return restored;
         }
 
         void SaveStates()
@@ -329,9 +519,11 @@ namespace SkyrimMP::Server
         impl_->boundPort = port;
 
         const auto restored = impl_->LoadStates();
+        const auto restoredDrops = impl_->LoadDrops();
         std::cout << "[WORLD-STATE] protocol=" << kWorldProtocol
                   << " listening=0.0.0.0:" << impl_->boundPort
                   << " restored=" << restored
+                  << " restoredDrops=" << restoredDrops
                   << " path=" << impl_->statePath.string() << '\n';
     }
 
@@ -388,6 +580,10 @@ namespace SkyrimMP::Server
                     for (const auto& [source, state] : impl_->states) {
                         impl_->SendSnapshot(peer, source, state);
                     }
+                    for (const auto& [id, drop] : impl_->dynamicDrops) {
+                        (void)id;
+                        if (!drop.removed) impl_->SendDropSnapshot(peer, 0, drop);
+                    }
                     continue;
                 }
 
@@ -397,6 +593,107 @@ namespace SkyrimMP::Server
                     continue;
                 }
                 clientIt->second.lastSeen = now;
+
+                if (kind == WorldPacketKind::DropRequest) {
+                    const auto requestId = Read<std::uint64_t>(bytes, offset);
+                    const auto baseObject = ReadKey(bytes, offset);
+                    const auto flags = Read<std::uint8_t>(bytes, offset);
+                    const auto cell = ReadKey(bytes, offset);
+                    const auto worldspace = ReadKey(bytes, offset);
+                    const auto readFloat = [&]() { return std::bit_cast<float>(Read<std::uint32_t>(bytes, offset)); };
+                    WorldTransform transform{ readFloat(), readFloat(), readFloat(), readFloat(), readFloat(), readFloat() };
+                    const auto itemCount = Read<std::uint16_t>(bytes, offset);
+                    const bool exterior = (flags & 0x01) != 0;
+                    const bool hasCell = (flags & 0x02) != 0;
+                    const bool hasWorld = (flags & 0x04) != 0;
+                    const bool finite = std::isfinite(transform.x) && std::isfinite(transform.y) &&
+                        std::isfinite(transform.z) && std::isfinite(transform.pitch) &&
+                        std::isfinite(transform.yaw) && std::isfinite(transform.roll);
+                    if (offset != bytes.size() || requestId == 0 || (flags & ~0x07u) != 0 || !hasCell ||
+                        (exterior && !hasWorld) || itemCount == 0 || itemCount > 32767 || !finite ||
+                        !impl_->registry->validItemBaseRecords.contains(baseObject)) {
+                        ++impl_->stats.observationsRejected;
+                        continue;
+                    }
+
+                    const auto existing = impl_->dropRequests.find(requestId);
+                    if (existing != impl_->dropRequests.end()) {
+                        const auto drop = impl_->dynamicDrops.find(existing->second);
+                        if (drop != impl_->dynamicDrops.end()) {
+                            const auto& persisted = drop->second;
+                            const bool sameRequest = persisted.baseObject == baseObject &&
+                                persisted.location.cell == cell && persisted.location.worldspace == worldspace &&
+                                persisted.location.exterior == exterior && persisted.location.hasCell == hasCell &&
+                                persisted.location.hasWorldspace == hasWorld && persisted.count == itemCount &&
+                                std::bit_cast<std::uint32_t>(persisted.transform.x) == std::bit_cast<std::uint32_t>(transform.x) &&
+                                std::bit_cast<std::uint32_t>(persisted.transform.y) == std::bit_cast<std::uint32_t>(transform.y) &&
+                                std::bit_cast<std::uint32_t>(persisted.transform.z) == std::bit_cast<std::uint32_t>(transform.z) &&
+                                std::bit_cast<std::uint32_t>(persisted.transform.pitch) == std::bit_cast<std::uint32_t>(transform.pitch) &&
+                                std::bit_cast<std::uint32_t>(persisted.transform.yaw) == std::bit_cast<std::uint32_t>(transform.yaw) &&
+                                std::bit_cast<std::uint32_t>(persisted.transform.roll) == std::bit_cast<std::uint32_t>(transform.roll);
+                            if (sameRequest) impl_->SendDropSnapshot(peer, requestId, persisted);
+                            else ++impl_->stats.observationsRejected;
+                        }
+                        continue;
+                    }
+
+                    RuntimeEntityLocation location;
+                    location.cell = cell;
+                    location.worldspace = worldspace;
+                    location.exterior = exterior;
+                    location.hasCell = true;
+                    location.hasWorldspace = hasWorld;
+                    const auto entityId = SpawnRuntimeEntity(
+                        *impl_->registry, RuntimeEntityKind::StaticReference, transform, location);
+                    DynamicDropState drop;
+                    drop.id = entityId;
+                    drop.originRequestId = requestId;
+                    drop.baseObject = baseObject;
+                    drop.transform = transform;
+                    drop.location = location;
+                    drop.count = itemCount;
+                    impl_->dynamicDrops.emplace(entityId, drop);
+                    impl_->dropRequests.emplace(requestId, entityId);
+                    ++impl_->stats.dynamicDropsSpawned;
+                    ++impl_->stats.observationsApplied;
+                    impl_->SaveDrops();
+                    impl_->BroadcastDropSnapshot(drop, requestId, peerKey);
+                    std::cout << "[WORLD-DROP-SPAWN] entity=" << entityId << " count=" << itemCount << '\n';
+                    continue;
+                }
+
+                if (kind == WorldPacketKind::RemoveDynamic) {
+                    const auto pickupRequestId = Read<std::uint64_t>(bytes, offset);
+                    const auto entityId = Read<WorldEntityId>(bytes, offset);
+                    const auto itemCount = Read<std::uint16_t>(bytes, offset);
+                    const auto dropIt = impl_->dynamicDrops.find(entityId);
+                    if (offset != bytes.size() || pickupRequestId == 0 || itemCount == 0 ||
+                        dropIt == impl_->dynamicDrops.end()) {
+                        ++impl_->stats.observationsRejected;
+                        continue;
+                    }
+                    if (!dropIt->second.removed) {
+                        if (itemCount != dropIt->second.count) {
+                            ++impl_->stats.observationsRejected;
+                            impl_->SendDropSnapshot(peer, pickupRequestId, dropIt->second, false);
+                            continue;
+                        }
+                        dropIt->second.acceptedPickupRequestId = pickupRequestId;
+                        dropIt->second.removed = true;
+                        ++dropIt->second.revision;
+                        DespawnRuntimeEntity(*impl_->registry, entityId);
+                        ++impl_->stats.dynamicDropsRemoved;
+                        ++impl_->stats.observationsApplied;
+                        impl_->SaveDrops();
+                        impl_->BroadcastDropSnapshot(dropIt->second, pickupRequestId, peerKey, true);
+                        std::cout << "[WORLD-DROP-REMOVE] entity=" << entityId
+                                  << " request=" << pickupRequestId << '\n';
+                    } else {
+                        const bool accepted = dropIt->second.acceptedPickupRequestId == pickupRequestId;
+                        impl_->SendDropSnapshot(peer, pickupRequestId, dropIt->second, accepted);
+                    }
+                    continue;
+                }
 
                 if (kind != WorldPacketKind::Observation) {
                     throw std::runtime_error("unexpected world-state packet kind");
@@ -446,6 +743,7 @@ namespace SkyrimMP::Server
         if (impl_->registry && !impl_->statePath.empty()) {
             try {
                 impl_->SaveStates();
+                impl_->SaveDrops();
             } catch (const std::exception& error) {
                 std::cerr << "[WORLD-STATE] final persistence failed reason=\"" << error.what() << "\"\n";
             }
@@ -460,6 +758,8 @@ namespace SkyrimMP::Server
         }
         impl_->clients.clear();
         impl_->states.clear();
+        impl_->dynamicDrops.clear();
+        impl_->dropRequests.clear();
         impl_->registry = nullptr;
         impl_->boundPort = 0;
     }

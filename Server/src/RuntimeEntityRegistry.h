@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace SkyrimMP::Server
@@ -65,6 +66,7 @@ namespace SkyrimMP::Server
         std::unordered_map<CanonicalRecordKey, NetworkEntityId, CanonicalRecordKeyHash> sourceToNetwork;
         std::unordered_map<CanonicalRecordKey, std::vector<NetworkEntityId>, CanonicalRecordKeyHash> interiorCells;
         std::unordered_map<ExteriorInterestBucketKey, std::vector<NetworkEntityId>, ExteriorInterestBucketKeyHash> exteriorBuckets;
+        std::unordered_set<CanonicalRecordKey, CanonicalRecordKeyHash> validItemBaseRecords;
         NetworkEntityId nextDynamicId{ kDynamicWorldEntityBit };
         std::uint64_t staticEntities{};
         std::uint64_t actors{};
@@ -87,6 +89,13 @@ namespace SkyrimMP::Server
         const RuntimeEntityLocation& a_location);
 
     bool DespawnRuntimeEntity(RuntimeEntityRegistry& a_registry, NetworkEntityId a_id);
+
+    bool RestoreRuntimeEntity(
+        RuntimeEntityRegistry& a_registry,
+        NetworkEntityId a_id,
+        RuntimeEntityKind a_kind,
+        const WorldTransform& a_transform,
+        const RuntimeEntityLocation& a_location);
 
     bool UpdateRuntimeEntity(
         RuntimeEntityRegistry& a_registry,

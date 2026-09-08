@@ -198,6 +198,28 @@ namespace SkyrimMP::Server
         return true;
     }
 
+    bool RestoreRuntimeEntity(
+        RuntimeEntityRegistry& registry,
+        NetworkEntityId id,
+        RuntimeEntityKind kind,
+        const WorldTransform& transform,
+        const RuntimeEntityLocation& location)
+    {
+        if (!IsDynamicWorldEntity(id) || !location.hasCell ||
+            (location.exterior && !location.hasWorldspace) || registry.entities.contains(id)) return false;
+        RuntimeEntityState entity;
+        entity.id = id;
+        entity.kind = kind;
+        entity.transform = transform;
+        entity.location = location;
+        entity.revision = 1;
+        if (!registry.entities.emplace(id, entity).second) return false;
+        AddToBucket(registry, registry.entities.at(id));
+        registry.nextDynamicId = std::max(registry.nextDynamicId, id + 1);
+        ++registry.spawned;
+        return true;
+    }
+
     bool UpdateRuntimeEntity(RuntimeEntityRegistry& registry, NetworkEntityId id, const WorldTransform& transform, const RuntimeEntityLocation& location)
     {
         const auto it = registry.entities.find(id);

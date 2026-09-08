@@ -599,7 +599,10 @@ namespace SkyrimMP
             const bool exterior = (flags & 0x01) != 0;
             const bool hasCell = (flags & 0x02) != 0;
             const bool hasWorld = (flags & 0x04) != 0;
-            if (!hasCell || (exterior && !hasWorld)) throw std::runtime_error("world bootstrap location flags invalid");
+            const bool firstLogin = (flags & 0x08) != 0;
+            if ((flags & ~0x0Fu) != 0 || !hasCell || (exterior && !hasWorld)) {
+                throw std::runtime_error("world bootstrap location flags invalid");
+            }
 
             const auto anchorFormId = CanonicalToRuntimeForm(anchor);
             const auto cellFormId = CanonicalToRuntimeForm(cell);
@@ -614,7 +617,8 @@ namespace SkyrimMP
                 cellFormId,
                 worldFormId,
                 position,
-                rotation
+                rotation,
+                firstLogin
             });
 
             {
@@ -625,11 +629,12 @@ namespace SkyrimMP
             bootstrapReceived = true;
             g_authenticated.store(true, std::memory_order_release);
             logs::info(
-                "[NET-CLIENT] server world bootstrap playerEntity={:016X} anchor={:08X} cell={:08X} world={:08X} authority=server",
+                "[NET-CLIENT] server world bootstrap playerEntity={:016X} anchor={:08X} cell={:08X} world={:08X} firstLogin={} authority=server",
                 playerEntityId,
                 anchorFormId,
                 cellFormId,
-                worldFormId);
+                worldFormId,
+                firstLogin);
         }
 
         void NetworkThread(std::stop_token stop)

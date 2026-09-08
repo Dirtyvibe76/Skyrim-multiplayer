@@ -17,6 +17,9 @@ namespace SkyrimMP::Server
         std::uint64_t observationsRejected{};
         std::uint64_t snapshotsSent{};
         std::uint64_t persistedStates{};
+        std::uint64_t dynamicDropsSpawned{};
+        std::uint64_t dynamicDropsRemoved{};
+        std::uint64_t dynamicDropsPersisted{};
     };
 
     class WorldStateServer

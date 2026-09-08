@@ -239,6 +239,13 @@ namespace SkyrimMP::Server
         const auto world = BuildWorldReferenceDatabase(a_database, a_stack, a_runtimeRegistry);
         (void)world;
         if (a_runtimeRegistry) {
+            static const std::unordered_set<std::string> itemTypes{
+                "ALCH", "AMMO", "ARMO", "BOOK", "INGR", "KEYM", "MISC", "SCRL", "SLGM", "WEAP"
+            };
+            a_runtimeRegistry->validItemBaseRecords.reserve(65536);
+            for (const auto& [key, record] : a_database.winners) {
+                if (itemTypes.contains(record.type)) a_runtimeRegistry->validItemBaseRecords.insert(key);
+            }
             a_runtimeRegistry->questDefinitions = summary.questDefinitions;
             a_runtimeRegistry->questPrograms = summary.questPrograms;
         }

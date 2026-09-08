@@ -8,8 +8,10 @@
 #include <bit>
 #include <cctype>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -22,7 +24,7 @@ namespace SkyrimMP
         using namespace std::chrono_literals;
 
         constexpr std::uint32_t kWorldMagic = 0x31535753u; // "SWS1"
-        constexpr std::uint16_t kWorldProtocol = 2;
+        constexpr std::uint16_t kWorldProtocol = 3;
         constexpr auto kLoadOrderRevision = "7dc35a831945468b790a6b3398236c0fe9fe7c8b32425be9ef07ca1434d6c808";
         constexpr std::size_t kMaxDatagram = 1200;
         constexpr auto kPickupCorrelationWindow = 5s;
@@ -33,7 +35,10 @@ namespace SkyrimMP
             Welcome = 2,
             Observation = 3,
             Snapshot = 4,
-            Reject = 5
+            Reject = 5,
+            DropRequest = 6,
+            DropSnapshot = 7,
+            RemoveDynamic = 8
         };
 
         struct CanonicalKey
@@ -68,7 +73,60 @@ namespace SkyrimMP
         {
             std::uint32_t referenceFormId{};
             std::uint32_t baseObjectFormId{};
+            WorldEntityId worldEntityId{};
             std::chrono::steady_clock::time_point capturedAt{};
+        };
+
+        struct PendingDropRequest
+        {
+            std::uint64_t requestId{};
+            RE::ObjectRefHandle localHandle;
+            CanonicalKey baseObject;
+            CanonicalKey cell;
+            CanonicalKey worldspace;
+            RE::NiPoint3 position;
+            RE::NiPoint3 rotation;
+            std::uint16_t count{ 1 };
+            bool exterior{};
+            bool hasWorldspace{};
+            std::chrono::steady_clock::time_point lastSent{};
+        };
+
+        struct PendingDropIntent
+        {
+            std::uint64_t requestId{};
+            std::uint32_t baseObjectFormId{};
+            std::uint16_t count{ 1 };
+            std::chrono::steady_clock::time_point capturedAt{};
+            std::chrono::steady_clock::time_point lastProbeScheduled{};
+        };
+
+        struct PendingDynamicRemoval
+        {
+            std::uint64_t requestId{};
+            WorldEntityId entityId{};
+            std::uint32_t baseObjectFormId{};
+            std::uint16_t count{ 1 };
+            std::chrono::steady_clock::time_point lastSent{};
+        };
+
+        struct DynamicDropSnapshot
+        {
+            std::uint64_t requestId{};
+            WorldEntityId entityId{};
+            std::uint32_t baseObjectFormId{};
+            std::uint32_t cellFormId{};
+            std::uint32_t worldspaceFormId{};
+            RE::NiPoint3 position;
+            RE::NiPoint3 rotation;
+            std::uint16_t count{ 1 };
+            std::uint64_t revision{};
+            bool exterior{};
+            bool removed{};
+            bool pickupAccepted{};
+            bool rollbackPickup{};
+            std::uint16_t rollbackCount{};
+            RE::ObjectRefHandle originatingHandle;
         };
 
         struct ServerTarget
@@ -85,6 +143,10 @@ namespace SkyrimMP
         std::unordered_map<std::uint32_t, PendingObservation> g_pending;
         std::unordered_map<WorldEntityId, AuthoritativeState> g_authoritative;
         std::optional<RecentActivation> g_recentActivation;
+        std::unordered_map<std::uint64_t, PendingDropRequest> g_pendingDrops;
+        std::unordered_map<std::uint64_t, PendingDropIntent> g_pendingDropIntents;
+        std::unordered_map<std::uint64_t, PendingDynamicRemoval> g_pendingDynamicRemovals;
+        std::atomic_uint64_t g_nextTransaction{ 1 };
 
         std::string Trim(std::string value)
         {
@@ -96,6 +158,15 @@ namespace SkyrimMP
                 return !isSpace(static_cast<unsigned char>(c));
             }).base(), value.end());
             return value;
+        }
+
+        std::uint64_t NewTransactionId()
+        {
+            static std::random_device random;
+            const auto sequence = g_nextTransaction.fetch_add(1, std::memory_order_relaxed);
+            std::uint64_t id = (static_cast<std::uint64_t>(random()) << 32) ^
+                static_cast<std::uint64_t>(random()) ^ (GetTickCount64() << 1) ^ sequence;
+            return id != 0 ? id : sequence;
         }
 
         ServerTarget ReadServerTarget()
@@ -254,6 +325,37 @@ namespace SkyrimMP
             return MakePacket(WorldPacketKind::Observation, payload);
         }
 
+        std::vector<std::uint8_t> MakeDropRequest(const PendingDropRequest& request)
+        {
+            std::vector<std::uint8_t> payload;
+            Append(payload, request.requestId);
+            AppendKey(payload, request.baseObject);
+            std::uint8_t flags = 0x02;
+            if (request.exterior) flags |= 0x01;
+            if (request.hasWorldspace) flags |= 0x04;
+            Append(payload, flags);
+            AppendKey(payload, request.cell);
+            AppendKey(payload, request.worldspace);
+            const auto appendFloat = [&](float value) { Append(payload, std::bit_cast<std::uint32_t>(value)); };
+            appendFloat(request.position.x);
+            appendFloat(request.position.y);
+            appendFloat(request.position.z);
+            appendFloat(request.rotation.x);
+            appendFloat(request.rotation.y);
+            appendFloat(request.rotation.z);
+            Append(payload, request.count);
+            return MakePacket(WorldPacketKind::DropRequest, payload);
+        }
+
+        std::vector<std::uint8_t> MakeDynamicRemoval(const PendingDynamicRemoval& request)
+        {
+            std::vector<std::uint8_t> payload;
+            Append(payload, request.requestId);
+            Append(payload, request.entityId);
+            Append(payload, request.count);
+            return MakePacket(WorldPacketKind::RemoveDynamic, payload);
+        }
+
         void SendPacket(SOCKET socketValue, const sockaddr_in& target, const std::vector<std::uint8_t>& bytes)
         {
             if (bytes.empty()) return;
@@ -341,6 +443,245 @@ namespace SkyrimMP
             pending.lastSent = {};
         }
 
+        bool QueueDroppedReference(
+            std::uint64_t requestId,
+            std::uint32_t baseObjectFormId,
+            std::uint16_t count,
+            RE::TESObjectREFR* reference)
+        {
+            if (requestId == 0 || baseObjectFormId == 0 || count == 0 || !reference || reference->As<RE::Actor>()) return false;
+            auto* cell = reference->GetParentCell();
+            if (!cell) return false;
+
+            PendingDropRequest request;
+            request.requestId = requestId;
+            if (!RuntimeFormToCanonical(baseObjectFormId, request.baseObject) ||
+                !RuntimeFormToCanonical(cell->GetFormID(), request.cell)) return false;
+            request.localHandle = reference->GetHandle();
+            request.position = reference->GetPosition();
+            request.rotation = reference->GetAngle();
+            request.count = count;
+            if (auto* world = cell->GetRuntimeData().worldSpace) {
+                request.exterior = true;
+                request.hasWorldspace = RuntimeFormToCanonical(world->GetFormID(), request.worldspace);
+                if (!request.hasWorldspace) return false;
+            }
+
+            const auto formId = reference->GetFormID();
+            {
+                std::scoped_lock lock(g_stateMutex);
+                if (g_pendingDrops.contains(requestId)) return true;
+                g_pendingDropIntents.erase(requestId);
+                g_pendingDrops.emplace(requestId, std::move(request));
+            }
+            logs::info("[WORLD-DROP-REQUEST] request={:016X} localForm={:08X} base={:08X} count={}",
+                requestId, formId, baseObjectFormId, count);
+            return true;
+        }
+
+        void ResolveDropIntentNearPlayer(std::uint64_t requestId)
+        {
+            PendingDropIntent intent;
+            {
+                std::scoped_lock lock(g_stateMutex);
+                const auto it = g_pendingDropIntents.find(requestId);
+                if (it == g_pendingDropIntents.end()) return;
+                if (std::chrono::steady_clock::now() - it->second.capturedAt > 2s) {
+                    logs::warn("[WORLD-DROP] native reference correlation expired request={:016X} base={:08X}",
+                        requestId, it->second.baseObjectFormId);
+                    g_pendingDropIntents.erase(it);
+                    return;
+                }
+                intent = it->second;
+            }
+
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            auto* cell = player ? player->GetParentCell() : nullptr;
+            if (!player || !cell) return;
+
+            RE::TESObjectREFR* best = nullptr;
+            float bestDistance = (std::numeric_limits<float>::max)();
+            cell->ForEachReferenceInRange(player->GetPosition(), 768.0F, [&](RE::TESObjectREFR* candidate) {
+                if (!candidate || candidate->As<RE::Actor>() || candidate->IsDisabled()) {
+                    return RE::BSContainer::ForEachResult::kContinue;
+                }
+                const auto formId = candidate->GetFormID();
+                if ((formId & 0xFF000000u) != 0xFF000000u ||
+                    NativeEntityRegistry::FindByRuntimeFormId(formId) != 0) {
+                    return RE::BSContainer::ForEachResult::kContinue;
+                }
+                const auto* baseObject = candidate->GetBaseObject();
+                if (!baseObject || baseObject->GetFormID() != intent.baseObjectFormId) {
+                    return RE::BSContainer::ForEachResult::kContinue;
+                }
+                const auto distance = player->GetPosition().GetSquaredDistance(candidate->GetPosition());
+                if (!best || distance < bestDistance ||
+                    (distance == bestDistance && formId > best->GetFormID())) {
+                    best = candidate;
+                    bestDistance = distance;
+                }
+                return RE::BSContainer::ForEachResult::kContinue;
+            });
+
+            if (best && QueueDroppedReference(requestId, intent.baseObjectFormId, intent.count, best)) {
+                logs::info("[WORLD-DROP-CORRELATED] request={:016X} localForm={:08X} source=cell-scan",
+                    requestId, best->GetFormID());
+            }
+        }
+
+        void ResolveDropIntentFromLoadedReference(std::uint32_t formId)
+        {
+            if ((formId & 0xFF000000u) != 0xFF000000u ||
+                NativeEntityRegistry::FindByRuntimeFormId(formId) != 0) return;
+            auto* form = RE::TESForm::LookupByID(formId);
+            auto* reference = form ? form->As<RE::TESObjectREFR>() : nullptr;
+            if (!reference || reference->As<RE::Actor>()) return;
+            const auto* baseObject = reference->GetBaseObject();
+            if (!baseObject) return;
+
+            std::vector<PendingDropIntent> matches;
+            const auto now = std::chrono::steady_clock::now();
+            {
+                std::scoped_lock lock(g_stateMutex);
+                for (auto it = g_pendingDropIntents.begin(); it != g_pendingDropIntents.end();) {
+                    if (now - it->second.capturedAt > 2s) {
+                        it = g_pendingDropIntents.erase(it);
+                        continue;
+                    }
+                    if (it->second.baseObjectFormId == baseObject->GetFormID()) matches.push_back(it->second);
+                    ++it;
+                }
+            }
+            std::sort(matches.begin(), matches.end(), [](const auto& left, const auto& right) {
+                return left.capturedAt < right.capturedAt;
+            });
+            for (const auto& intent : matches) {
+                if (QueueDroppedReference(intent.requestId, intent.baseObjectFormId, intent.count, reference)) {
+                    logs::info("[WORLD-DROP-CORRELATED] request={:016X} localForm={:08X} source=object-loaded",
+                        intent.requestId, formId);
+                    break;
+                }
+            }
+        }
+
+        void QueueDroppedItem(const RE::TESContainerChangedEvent* event, const RE::PlayerCharacter& player)
+        {
+            if (!event || event->oldContainer != player.GetFormID() || event->newContainer != 0 ||
+                event->baseObj == 0 || event->itemCount <= 0 || event->itemCount > 32767) return;
+
+            auto reference = event->reference.get();
+            const auto requestId = NewTransactionId();
+            const auto count = static_cast<std::uint16_t>(event->itemCount);
+            logs::info("[WORLD-DROP-EVENT] request={:016X} old={:08X} new={:08X} base={:08X} count={} ref={:08X} unique={}",
+                requestId,
+                event->oldContainer,
+                event->newContainer,
+                event->baseObj,
+                event->itemCount,
+                reference ? reference->GetFormID() : 0,
+                event->uniqueID);
+
+            if (reference && QueueDroppedReference(requestId, event->baseObj, count, reference.get())) return;
+
+            {
+                std::scoped_lock lock(g_stateMutex);
+                g_pendingDropIntents[requestId] = PendingDropIntent{
+                    requestId,
+                    event->baseObj,
+                    count,
+                    std::chrono::steady_clock::now()
+                };
+            }
+            logs::info("[WORLD-DROP-DEFERRED] request={:016X} base={:08X} count={}",
+                requestId, event->baseObj, event->itemCount);
+            if (auto* tasks = SKSE::GetTaskInterface()) {
+                tasks->AddTask([requestId]() { ResolveDropIntentNearPlayer(requestId); });
+            }
+        }
+
+        void QueueDynamicRemoval(WorldEntityId entityId, std::uint32_t baseObjectFormId, std::uint16_t count)
+        {
+            if (!IsDynamicWorldEntity(entityId) || baseObjectFormId == 0 || count == 0) return;
+            std::scoped_lock lock(g_stateMutex);
+            for (const auto& [requestId, pending] : g_pendingDynamicRemovals) {
+                (void)requestId;
+                if (pending.entityId == entityId) return;
+            }
+            PendingDynamicRemoval request;
+            request.requestId = NewTransactionId();
+            request.entityId = entityId;
+            request.baseObjectFormId = baseObjectFormId;
+            request.count = count;
+            g_pendingDynamicRemovals.emplace(request.requestId, request);
+        }
+
+        void ApplyDynamicDrop(DynamicDropSnapshot drop)
+        {
+            if (drop.rollbackPickup && drop.rollbackCount != 0) {
+                auto* baseForm = RE::TESForm::LookupByID(drop.baseObjectFormId);
+                auto* baseObject = baseForm ? baseForm->As<RE::TESBoundObject>() : nullptr;
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                if (baseObject && player) {
+                    g_applyingAuthoritative.store(true, std::memory_order_release);
+                    player->RemoveItem(baseObject, drop.rollbackCount, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
+                    g_applyingAuthoritative.store(false, std::memory_order_release);
+                    logs::warn("[WORLD-DROP-PICKUP-ROLLBACK] worldEntity={:016X} base={:08X} count={}",
+                        drop.entityId, drop.baseObjectFormId, drop.rollbackCount);
+                }
+            }
+
+            if (drop.removed) {
+                if (auto* reference = NativeEntityRegistry::Resolve(drop.entityId)) {
+                    g_applyingAuthoritative.store(true, std::memory_order_release);
+                    if (!reference->IsDisabled()) reference->Disable();
+                    g_applyingAuthoritative.store(false, std::memory_order_release);
+                }
+                NativeEntityRegistry::Unbind(drop.entityId);
+                logs::info("[WORLD-DROP-REMOVE] worldEntity={:016X} revision={}", drop.entityId, drop.revision);
+                return;
+            }
+
+            auto originatingReference = drop.originatingHandle.get();
+            RE::TESObjectREFR* reference = originatingReference.get();
+            if (!reference) reference = NativeEntityRegistry::Resolve(drop.entityId);
+            if (!reference) {
+                auto* baseForm = RE::TESForm::LookupByID(drop.baseObjectFormId);
+                auto* baseObject = baseForm ? baseForm->As<RE::TESBoundObject>() : nullptr;
+                auto* cell = RE::TESForm::LookupByID<RE::TESObjectCELL>(drop.cellFormId);
+                auto* world = drop.worldspaceFormId != 0 ? RE::TESForm::LookupByID<RE::TESWorldSpace>(drop.worldspaceFormId) : nullptr;
+                auto* handler = RE::TESDataHandler::GetSingleton();
+                if (!baseObject || !cell || !handler) {
+                    logs::warn("[WORLD-DROP] unresolved native data worldEntity={:016X} base={:08X} cell={:08X}",
+                        drop.entityId, drop.baseObjectFormId, drop.cellFormId);
+                    return;
+                }
+                const auto handle = handler->CreateReferenceAtLocation(
+                    baseObject, drop.position, drop.rotation, cell, world, nullptr, nullptr,
+                    RE::ObjectRefHandle(), false, true);
+                reference = handle.get().get();
+                if (!reference) {
+                    logs::warn("[WORLD-DROP] native creation failed worldEntity={:016X}", drop.entityId);
+                    return;
+                }
+            }
+
+            reference->SetTemporary();
+            reference->extraList.SetCount(drop.count);
+            reference->SetPosition(drop.position);
+            reference->data.angle = drop.rotation;
+            reference->Update3DPosition(true);
+            if (!NativeEntityRegistry::BindRuntime(drop.entityId, *reference, NativeEntityKind::DynamicReference)) return;
+            logs::info("[WORLD-DROP-SPAWN] worldEntity={:016X} form={:08X} base={:08X} count={} revision={}",
+                drop.entityId, reference->GetFormID(), drop.baseObjectFormId, drop.count, drop.revision);
+        }
+
+        void ScheduleDynamicDrop(DynamicDropSnapshot drop)
+        {
+            if (auto* tasks = SKSE::GetTaskInterface()) {
+                tasks->AddTask([drop = std::move(drop)]() mutable { ApplyDynamicDrop(std::move(drop)); });
+            }
+        }
+
         bool IsPlayer(const RE::TESObjectREFR* reference)
         {
             const auto* player = RE::PlayerCharacter::GetSingleton();
@@ -353,7 +694,8 @@ namespace SkyrimMP
 
             const auto formId = reference->GetFormID();
             CanonicalKey key;
-            if (!RuntimeFormToCanonical(formId, key)) return;
+            const auto entityId = NativeEntityRegistry::FindByRuntimeFormId(formId);
+            if (entityId == 0 && !RuntimeFormToCanonical(formId, key)) return;
 
             const auto* baseObject = reference->GetBaseObject();
             if (!baseObject) return;
@@ -363,6 +705,7 @@ namespace SkyrimMP
                 g_recentActivation = RecentActivation{
                     formId,
                     baseObject->GetFormID(),
+                    entityId,
                     std::chrono::steady_clock::now()
                 };
             }
@@ -403,6 +746,23 @@ namespace SkyrimMP
             const auto formId = g_recentActivation->referenceFormId;
             g_recentActivation.reset();
             return formId;
+        }
+
+        WorldEntityId ResolveDynamicPickupEntity(const RE::TESContainerChangedEvent* event)
+        {
+            if (!event || event->oldContainer != 0) return 0;
+            if (auto reference = event->reference.get()) {
+                const auto id = NativeEntityRegistry::FindByRuntimeFormId(reference->GetFormID());
+                if (IsDynamicWorldEntity(id)) return id;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            std::scoped_lock lock(g_stateMutex);
+            if (!g_recentActivation || !IsDynamicWorldEntity(g_recentActivation->worldEntityId) ||
+                now - g_recentActivation->capturedAt > kPickupCorrelationWindow ||
+                event->baseObj == 0 || event->baseObj != g_recentActivation->baseObjectFormId) return 0;
+            const auto id = g_recentActivation->worldEntityId;
+            g_recentActivation.reset();
+            return id;
         }
 
         class WorldEventSink final :
@@ -471,8 +831,35 @@ namespace SkyrimMP
                 RE::BSTEventSource<RE::TESContainerChangedEvent>*) override
             {
                 const auto* player = RE::PlayerCharacter::GetSingleton();
+                if (event && player &&
+                    (event->oldContainer == player->GetFormID() || event->newContainer == player->GetFormID())) {
+                    const auto reference = event->reference.get();
+                    logs::info("[WORLD-CONTAINER-EVENT] old={:08X} new={:08X} base={:08X} count={} ref={:08X} unique={} applying={}",
+                        event->oldContainer,
+                        event->newContainer,
+                        event->baseObj,
+                        event->itemCount,
+                        reference ? reference->GetFormID() : 0,
+                        event->uniqueID,
+                        g_applyingAuthoritative.load(std::memory_order_acquire));
+                }
                 if (!event || !player || event->newContainer != player->GetFormID() ||
                     g_applyingAuthoritative.load(std::memory_order_acquire)) {
+                    if (event && player && event->oldContainer == player->GetFormID() && event->newContainer == 0 &&
+                        !g_applyingAuthoritative.load(std::memory_order_acquire)) {
+                        QueueDroppedItem(event, *player);
+                    }
+                    return RE::BSEventNotifyControl::kContinue;
+                }
+
+                const auto dynamicEntityId = ResolveDynamicPickupEntity(event);
+                if (dynamicEntityId != 0 && event->itemCount > 0 && event->itemCount <= 32767) {
+                    QueueDynamicRemoval(
+                        dynamicEntityId,
+                        event->baseObj,
+                        static_cast<std::uint16_t>(event->itemCount));
+                    logs::info("[WORLD-DROP-PICKUP] worldEntity={:016X} base={:08X} count={}",
+                        dynamicEntityId, event->baseObj, event->itemCount);
                     return RE::BSEventNotifyControl::kContinue;
                 }
 
@@ -500,6 +887,7 @@ namespace SkyrimMP
             {
                 if (!event || event->formID == 0) return RE::BSEventNotifyControl::kContinue;
                 if (event->loaded) {
+                    ResolveDropIntentFromLoadedReference(event->formID);
                     const auto entityId = NativeEntityRegistry::FindByRuntimeFormId(event->formID);
                     if (entityId != 0) ScheduleApply(entityId);
                 } else if (!g_applyingAuthoritative.load(std::memory_order_acquire)) {
@@ -596,6 +984,25 @@ namespace SkyrimMP
 
             while (!stop.stop_requested() && g_running.load(std::memory_order_relaxed)) {
                 const auto now = std::chrono::steady_clock::now();
+                std::vector<std::uint64_t> dropIntentProbes;
+                {
+                    std::scoped_lock lock(g_stateMutex);
+                    for (auto& [requestId, intent] : g_pendingDropIntents) {
+                        if (intent.lastProbeScheduled.time_since_epoch().count() == 0 ||
+                            now - intent.lastProbeScheduled >= 50ms) {
+                            dropIntentProbes.push_back(requestId);
+                            intent.lastProbeScheduled = now;
+                        }
+                    }
+                }
+                if (!dropIntentProbes.empty()) {
+                    if (auto* tasks = SKSE::GetTaskInterface()) {
+                        for (const auto requestId : dropIntentProbes) {
+                            tasks->AddTask([requestId]() { ResolveDropIntentNearPlayer(requestId); });
+                        }
+                    }
+                }
+
                 const auto helloInterval = welcomed ? 5s : 1s;
                 if (lastHello.time_since_epoch().count() == 0 || now - lastHello >= helloInterval) {
                     SendPacket(socketValue, server, MakeHello());
@@ -608,6 +1015,8 @@ namespace SkyrimMP
 
                 if (welcomed) {
                     std::vector<std::pair<std::uint32_t, ReferenceState>> observations;
+                    std::vector<PendingDropRequest> dropRequests;
+                    std::vector<PendingDynamicRemoval> dynamicRemovals;
                     {
                         std::scoped_lock lock(g_stateMutex);
                         for (auto& [formId, pending] : g_pending) {
@@ -616,9 +1025,29 @@ namespace SkyrimMP
                                 pending.lastSent = now;
                             }
                         }
+                        for (auto& [requestId, request] : g_pendingDrops) {
+                            (void)requestId;
+                            if (request.lastSent.time_since_epoch().count() == 0 || now - request.lastSent >= 250ms) {
+                                dropRequests.push_back(request);
+                                request.lastSent = now;
+                            }
+                        }
+                        for (auto& [requestId, request] : g_pendingDynamicRemovals) {
+                            (void)requestId;
+                            if (request.lastSent.time_since_epoch().count() == 0 || now - request.lastSent >= 250ms) {
+                                dynamicRemovals.push_back(request);
+                                request.lastSent = now;
+                            }
+                        }
                     }
                     for (const auto& [formId, state] : observations) {
                         SendPacket(socketValue, server, MakeObservation(formId, state));
+                    }
+                    for (const auto& request : dropRequests) {
+                        SendPacket(socketValue, server, MakeDropRequest(request));
+                    }
+                    for (const auto& request : dynamicRemovals) {
+                        SendPacket(socketValue, server, MakeDynamicRemoval(request));
                     }
                 }
 
@@ -661,6 +1090,61 @@ namespace SkyrimMP
                             const auto reason = Read<std::uint8_t>(bytes, offset);
                             welcomed = false;
                             logs::error("[WORLD-STATE] server rejected world channel reason={}", reason);
+                            continue;
+                        }
+                        if (kind == WorldPacketKind::DropSnapshot) {
+                            DynamicDropSnapshot drop;
+                            drop.requestId = Read<std::uint64_t>(bytes, offset);
+                            drop.entityId = Read<WorldEntityId>(bytes, offset);
+                            const auto baseObject = ReadKey(bytes, offset);
+                            const auto flags = Read<std::uint8_t>(bytes, offset);
+                            const auto cell = ReadKey(bytes, offset);
+                            const auto worldspace = ReadKey(bytes, offset);
+                            const auto readFloat = [&]() { return std::bit_cast<float>(Read<std::uint32_t>(bytes, offset)); };
+                            drop.position = { readFloat(), readFloat(), readFloat() };
+                            drop.rotation = { readFloat(), readFloat(), readFloat() };
+                            drop.count = Read<std::uint16_t>(bytes, offset);
+                            drop.revision = Read<std::uint64_t>(bytes, offset);
+                            drop.exterior = (flags & 0x01) != 0;
+                            const bool hasCell = (flags & 0x02) != 0;
+                            const bool hasWorld = (flags & 0x04) != 0;
+                            drop.removed = (flags & 0x08) != 0;
+                            drop.pickupAccepted = (flags & 0x10) != 0;
+                            drop.baseObjectFormId = CanonicalToRuntimeForm(baseObject);
+                            drop.cellFormId = CanonicalToRuntimeForm(cell);
+                            drop.worldspaceFormId = hasWorld ? CanonicalToRuntimeForm(worldspace) : 0;
+                            if (offset != bytes.size() || !IsDynamicWorldEntity(drop.entityId) ||
+                                (flags & ~0x1Fu) != 0 || !hasCell || (drop.exterior && !hasWorld) ||
+                                (drop.pickupAccepted && (!drop.removed || drop.requestId == 0)) ||
+                                drop.baseObjectFormId == 0 || drop.cellFormId == 0 ||
+                                (hasWorld && drop.worldspaceFormId == 0) || drop.count == 0 || drop.revision == 0) {
+                                throw std::runtime_error("dynamic drop snapshot invalid");
+                            }
+                            {
+                                std::scoped_lock lock(g_stateMutex);
+                                if (drop.requestId != 0) {
+                                    const auto pendingDrop = g_pendingDrops.find(drop.requestId);
+                                    if (pendingDrop != g_pendingDrops.end()) {
+                                        drop.originatingHandle = pendingDrop->second.localHandle;
+                                        g_pendingDrops.erase(pendingDrop);
+                                    } else {
+                                        const auto pendingPickup = g_pendingDynamicRemovals.find(drop.requestId);
+                                        if (pendingPickup != g_pendingDynamicRemovals.end()) {
+                                            if (pendingPickup->second.entityId != drop.entityId ||
+                                                pendingPickup->second.baseObjectFormId != drop.baseObjectFormId ||
+                                                pendingPickup->second.count != drop.count) {
+                                                throw std::runtime_error("dynamic pickup response does not match pending transaction");
+                                            }
+                                            if (!drop.pickupAccepted) {
+                                                drop.rollbackPickup = true;
+                                                drop.rollbackCount = pendingPickup->second.count;
+                                            }
+                                            g_pendingDynamicRemovals.erase(pendingPickup);
+                                        }
+                                    }
+                                }
+                            }
+                            ScheduleDynamicDrop(std::move(drop));
                             continue;
                         }
                         if (kind != WorldPacketKind::Snapshot) {
@@ -715,6 +1199,9 @@ namespace SkyrimMP
             g_pending.clear();
             g_authoritative.clear();
             g_recentActivation.reset();
+            g_pendingDrops.clear();
+            g_pendingDropIntents.clear();
+            g_pendingDynamicRemovals.clear();
             NativeEntityRegistry::ResetStatic();
         }
         g_running.store(true, std::memory_order_release);
@@ -733,6 +1220,9 @@ namespace SkyrimMP
             g_pending.clear();
             g_authoritative.clear();
             g_recentActivation.reset();
+            g_pendingDrops.clear();
+            g_pendingDropIntents.clear();
+            g_pendingDynamicRemovals.clear();
             NativeEntityRegistry::ResetStatic();
         }
     }
